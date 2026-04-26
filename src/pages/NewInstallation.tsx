@@ -402,7 +402,6 @@ const NewInstallation: React.FC = () => {
           ...(deviceDistrict !== null && { district: deviceDistrict })
         },
         device: deviceId,
-        device__address: deviceAddress || undefined,
         device_mode: portModeId
       };
 
