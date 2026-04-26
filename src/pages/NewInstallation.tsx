@@ -223,7 +223,8 @@ const NewInstallation: React.FC = () => {
 
   const selectStreet = (street: Street) => {
     setAddress(street.Название);
-    setSelectedStreet(street);
+    // Временно ставим код 144 для всех улиц по просьбе юзера
+    setSelectedStreet({ ...street, Код: "144" });
     setShowSuggestions(false);
   };
 
