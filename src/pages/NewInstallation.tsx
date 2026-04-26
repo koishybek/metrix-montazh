@@ -33,7 +33,6 @@ const NewInstallation: React.FC = () => {
   const [deviceId, setDeviceId] = useState<number | null>(null); // Store selected device ID
   const [deviceType, setDeviceType] = useState<number | null>(null); // Store device model ID (18, 20, 31, etc.)
   const [deviceTypeName, setDeviceTypeName] = useState<string>(''); // For display
-  const [deviceAddress, setDeviceAddress] = useState<number | null>(null);
   const [deviceDistrict, setDeviceDistrict] = useState<number | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [suggestedDevices, setSuggestedDevices] = useState<any[]>([]);
@@ -277,7 +276,6 @@ const NewInstallation: React.FC = () => {
   const selectDevice = async (device: any) => {
     setModemSerial(device.eui || device.serial_number);
     setDeviceId(device.id);
-    setDeviceAddress(device.address);
     setDeviceDistrict(device.additional_data?.district ?? null);
 
     // Store device type info
@@ -377,9 +375,32 @@ const NewInstallation: React.FC = () => {
     if (!accountId) { alert('Введите лицевой счёт'); return; }
     if (!joinReading) { alert('Введите показания'); return; }
 
+    if (resourceType === 'cold' && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
+      const confirmed = window.confirm(
+        'Улица не выбрана из справочника. Акт будет создан без кода улицы Алматы Су. Продолжить?'
+      );
+      if (!confirmed) return;
+    }
+
     setSubmitting(true);
 
     try {
+      // НОВАЯ логика additional_data:
+      const additionalData = (() => {
+        // Только для ХВС (resourceType === 'cold') шлём almaty_su_street_id
+        // И только если улица реально выбрана (Код не пустой и не "0")
+        if (resourceType === 'cold') {
+          const streetId = selectedStreet?.Код;
+          return {
+            ...(streetId && streetId !== "0" ? { almaty_su_street_id: streetId } : {}),
+            ...(deviceDistrict !== null ? { district: deviceDistrict } : {})
+          };
+        }
+        // Для ГВС и остальных — пока не шлём additional_data
+        // (формат для ГВС неизвестен, лучше null чем 500)
+        return null;
+      })();
+
       const payload: InstallationData = {
         node: node,
         resource_type: resourceType === 'cold' ? 1 : 2,
@@ -396,12 +417,9 @@ const NewInstallation: React.FC = () => {
         object_type: objectType,
         description: description,
         is_active: true,
-        additional_data: {
-          almaty_su_street_id: selectedStreet?.Код || "0",
-          ...(deviceDistrict !== null && { district: deviceDistrict })
-        },
         device: deviceId,
-        device_mode: portModeId
+        device_mode: portModeId,
+        ...(additionalData !== null ? { additional_data: additionalData } : {})
       };
 
       const selectedMode = portModes.find(m => m.id === portModeId);
@@ -626,6 +644,11 @@ const NewInstallation: React.FC = () => {
             className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
             placeholder="Поиск улицы..."
           />
+          {resourceType === 'cold' && !selectedStreet?.Код && (
+            <p className="text-amber-600 text-xs mt-1">
+              ⚠️ Для ХВС выберите улицу из списка — это обязательно для Алматы Су
+            </p>
+          )}
           {showSuggestions && (
             <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 max-h-60 overflow-y-auto">
               {suggestedStreets.map((s, i) => (
