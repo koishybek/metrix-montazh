@@ -44,6 +44,8 @@ export const endpoints = {
     device: '/api/v1/device/',
     meter: '/api/v1/meter/',
     deviceMode: '/api/v1/device/mode/',
+    installationPlace: '/api/v1/installation_place/',
+    objectType: '/api/v1/object_type/',
 };
 
 export const getPortModes = async (deviceModelId?: number): Promise<PortMode[]> => {
@@ -56,6 +58,16 @@ export const getPortModes = async (deviceModelId?: number): Promise<PortMode[]> 
 
 export const getMeterModels = async (): Promise<MeterModel[]> => {
     const res = await api.get(`${endpoints.meterModels}?page_size=300`);
+    return res.data.results;
+};
+
+export const getInstallationPlaces = async (): Promise<any[]> => {
+    const res = await api.get(`${endpoints.installationPlace}?page_size=200`);
+    return res.data.results;
+};
+
+export const getObjectTypes = async (): Promise<any[]> => {
+    const res = await api.get(`${endpoints.objectType}?page_size=300`);
     return res.data.results;
 };
 

@@ -3,22 +3,15 @@ import { useLocation } from 'react-router-dom';
 import { format } from 'date-fns';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { Camera, MapPin, QrCode, Check, ChevronDown, Loader2 } from 'lucide-react';
-import api, { endpoints, getPortModes, getMeterModels } from '../api';
+import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes } from '../api';
 import streetsData from '../assets/streets.json';
 import { AUTO_NODE_BY_RESOURCE } from '../constants/resourceNodes';
 import type { Street, InstallationData, PortMode, MeterModel } from '../types';
 
-const OBJECT_TYPES = [ 
-  { id: 1, name: 'Квартира' }, 
-  { id: 2, name: 'Коттедж' }, 
-  { id: 3, name: 'Таун-хаус' }, 
-  { id: 5, name: 'Офис' }, 
-  { id: 6, name: 'Помещение' }, 
-  { id: 7, name: 'Комната' }, 
-  { id: 8, name: 'Склад' }, 
-  { id: 9, name: 'Гараж' }, 
-  { id: 10, name: 'Серверная' }, 
-];
+interface DictionaryItem {
+  id: number;
+  name: string;
+}
 
 const NewInstallation: React.FC = () => {
   const location = useLocation();
@@ -31,7 +24,6 @@ const NewInstallation: React.FC = () => {
   // 1. Resource Type & Hidden Fields
   const [resourceType, setResourceType] = useState<'cold' | 'hot' | null>(null);
   const [node, setNode] = useState<number>(20);
-  const [objectType, setObjectType] = useState<number>(1);
   const [clientSector, setClientSector] = useState<'private' | 'legal' | 'multi_apartment' | 'physical'>('private');
   const [description, setDescription] = useState('');
   const [joinDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -68,7 +60,12 @@ const NewInstallation: React.FC = () => {
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   // 6. Installation Place
-  const [installationPlace, setInstallationPlace] = useState<string>('1');
+  const [installationPlaces, setInstallationPlaces] = useState<DictionaryItem[]>([]);
+  const [installationPlace, setInstallationPlace] = useState<number>(1);
+
+  // 6.1 Object Type
+  const [objectTypes, setObjectTypes] = useState<DictionaryItem[]>([]);
+  const [objectType, setObjectType] = useState<number>(1);
 
   // 7. Apartment
   const [apartment, setApartment] = useState('');
@@ -161,6 +158,8 @@ const NewInstallation: React.FC = () => {
     };
 
     loadCachedOrFetch('meter_models_cache', 'meter_models_ts', setMeterModels, getMeterModels);
+    loadCachedOrFetch('installation_places_cache', 'installation_places_ts', setInstallationPlaces, getInstallationPlaces);
+    loadCachedOrFetch('object_types_cache', 'object_types_ts', setObjectTypes, getObjectTypes);
   }, []);
 
   // -- Handlers --
@@ -647,13 +646,11 @@ const NewInstallation: React.FC = () => {
             <div className="relative">
               <select
                 value={installationPlace}
-                onChange={(e) => setInstallationPlace(e.target.value)}
+                onChange={(e) => setInstallationPlace(Number(e.target.value))}
                 className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
               >
-                <option value="1">Квартира</option>
-                <option value="2">Подъезд</option>
-                <option value="3">Подвал</option>
-                <option value="4">Другое</option>
+                <option value="">Выберите место...</option>
+                {installationPlaces.map(ip => <option key={ip.id} value={ip.id}>{ip.name}</option>)}
               </select>
               <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
             </div>
@@ -667,7 +664,8 @@ const NewInstallation: React.FC = () => {
                 onChange={(e) => setObjectType(Number(e.target.value))}
                 className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
               >
-                {OBJECT_TYPES.map(ot => <option key={ot.id} value={ot.id}>{ot.name}</option>)}
+                <option value="">Выберите тип...</option>
+                {objectTypes.map(ot => <option key={ot.id} value={ot.id}>{ot.name}</option>)}
               </select>
               <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
             </div>
