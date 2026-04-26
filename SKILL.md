@@ -1,263 +1,484 @@
 ---
 name: metrix-context
-description: Smart Metrix API knowledge and architectural truth for Metrix Installer Pro. Auto-loads when working with installation acts, meters, devices, nodes, port modes, NewInstallation form, address search, drafts, Yandex Geocoder, sync. Use for anything related to sm.iot-exp.kz integration, payload structure, or known bugs in the codebase.
+description: >
+  Smart Metrix API — полная документация для Metrix Installer Pro PWA.
+  Загружать при любой работе с формой NewInstallation, payload Meter, Device, Node,
+  DeviceMode, справочниками, кэшированием, авторизацией, CORS.
+  Источник истины: реальный Swagger JSON + захваченный production POST payload.
 ---
 
-# Metrix Installer Pro — Project Context
+# Metrix Installer Pro — Контекст проекта
 
-## What the app is
+## Что за проект
 
-PWA for field installers of IoT-Exponenta (Kazakhstan). Installers register newly mounted meters (water/gas/heat/electricity) directly into Smart Metrix admin at `sm.iot-exp.kz`. App is a thin frontend over an existing REST API. **No own backend.**
+PWA для монтажников IoT-Exponenta (Казахстан). Монтажники в поле регистрируют
+установленные счётчики (вода/газ/тепло/электричество/датчики) в Smart Metrix
+по адресу `sm.iot-exp.kz`. Своего бэкенда нет — только REST API Smart Metrix.
 
-## Current state (known issues)
+---
 
-The codebase was built earlier by another AI but has **specific bugs** that need targeted fixes. UI renders, axios setup is sound, but these problems exist:
+## Архитектура Smart Metrix (как устроена система)
 
-1. **Hot water node hardcoded as 21** in `NewInstallation.tsx:122` — should be **79**
-2. **`client_sector: "legal"`** hardcoded in submit payload — should come from a UI radio
-3. **`district = 2`** hardcoded — should come from selected device data
-4. **`object_type` confused with `installation_place`** — they are 2 different fields with 2 different dictionaries
-5. **`device_mode` field missing** from payload — required, blocks valid POST
-6. **`device__address` field missing** from payload — should auto-fill from device
-7. **`meterModels.ts` static file is stale** — IDs (4, 12, 32, 33, 37) may not match current `/api/v1/meter/model/`
-8. **Mojibake in Russian strings** throughout the codebase (`РЎРµСЂРёР№РЅС‹Р№` instead of `Серийный`)
-9. **`endpoints.installation = '/api/v1/installation/'` doesn't exist** — should be `/api/v1/meter/`
-10. **streets.json keys use Russian** (`Название`, `Код`) which compound the mojibake problem
-11. **No port_mode integration** — required dropdown filtered by device, not implemented at all
+```
+Квартира → Счётчик (Meter) → Устройство СПД (Device) → Шлюз (Gateway) → Бэкенд
+                                   ↓
+                              DeviceModel (тип устройства, 33 шт)
+                              DeviceMode  (режим порта,   36 шт)
+```
 
-See `docs/audit/01-known-issues.md` for the full triage.
+**Иерархия адресов (Node-дерево):**
+```
+Алматы
+  └─ ГКП "Алматы Су" (id=18, SupplierCompany)
+      └─ ТОО "IoT-Exponenta" Алматы Су (id=20, ServiceCompany) ← ХВС счётчики
+  └─ ТОО «Алматинские тепловые сети» (id=79, SupplierCompany)  ← ГВС счётчики
+```
 
-## API — base info
+Монтажник не создаёт Node — только выбирает / получает автоматически по resource_type.
 
-- **Base URL:** `https://sm.iot-exp.kz`
-- **Auth:** `Authorization: Token <40-char-hex>` (Django opaque token, no expiry)
-- **Login endpoint:** `POST /api-token-auth/` with body `{username, password}` → returns `{token}`
-- **Content-Type:** `application/json`
-- **Pagination:** `{count, next, previous, results}` with `?page=N&page_size=M&ordering=...&search=...`
-- **Errors:** DRF format — `{detail: "..."}` or `{field_name: ["error msg"]}`
+---
+
+## Авторизация
+
+```
+POST /api-token-auth/
+Body: { username, password }
+Response: { token: "40-hex-chars", username, password }
+Header: Authorization: Token <40-hex>
+```
+
+- Токен **не истекает** (Django opaque token)
+- Logout endpoint **отсутствует** — клиент сам чистит localStorage
+- Refresh endpoint **отсутствует** — не нужен
+- `/me` endpoint **отсутствует** — при логине сохрани username отдельно в localStorage
+
+---
 
 ## CORS
 
-`sm.iot-exp.kz` only allows same-origin requests. For dev, use Vite proxy (`/api` → `https://sm.iot-exp.kz/api`). For production:
-- Either backend whitelists deploy domain
-- Or app served from iot-exp.kz subdomain
-- Or Capacitor wrapper (native bypass)
+`sm.iot-exp.kz` закрыт для внешних origins.
+- Dev: Vite proxy (`/api` → `https://sm.iot-exp.kz`)
+- Prod: бэкенд должен добавить домен деплоя в whitelist
 
-Decision deferred to product owner.
+---
 
-## Data model
+## Endpoints которые нужны приложению монтажника
 
-In Smart Metrix, "installation act" = creating a `Meter` linked to existing `Device` and `Node`:
+| Метод | URL | Назначение |
+|---|---|---|
+| POST | `/api-token-auth/` | Логин |
+| GET | `/api/v1/device/?search={EUI}` | Поиск устройства по EUI |
+| GET | `/api/v1/device/{id}/` | Детали устройства |
+| GET | `/api/v1/device/model/?page_size=100` | Справочник моделей устройств |
+| **GET** | **`/api/v1/device/mode/?device_model={N}`** | **Режимы порта (фильтр по модели!)** |
+| GET | `/api/v1/meter/model/?page_size=300` | Справочник моделей счётчиков |
+| GET | `/api/v1/resource_type/?page_size=20` | Типы ресурсов |
+| GET | `/api/v1/installation_place/?page_size=200` | Места установки |
+| GET | `/api/v1/object_type/?page_size=300` | Типы объектов |
+| GET | `/api/v1/address/{id}/` | Адрес устройства (если нужен district) |
+| **POST** | **`/api/v1/meter/`** | **Создание акта установки** |
 
-- **Node** — hierarchical address tree (Country → Region → City → Building → Apartment → Consumer). MPTT. Installer **does not create**.
-- **Device** — IoT gateway with EUI-64. Already exists. Installer searches by EUI substring.
-- **Meter** — **creating Meter = the installation act**. POST `/api/v1/meter/`.
-- **PortMode** — connection mode of meter to device. Filtered per device model. Determines extra fields (port, etc.).
+### ⚠️ Критически важно про DeviceMode endpoint
 
-## ⭐ Real production POST /api/v1/meter/ payload
+```
+ПРАВИЛЬНО:  GET /api/v1/device/mode/?device_model=20
+НЕВЕРНО:    GET /api/v1/port_mode/          ← 404, не существует
+НЕВЕРНО:    GET /api/v1/device_mode/        ← 404, не существует
+```
 
-**This is the source of truth. Captured from working admin form on 2026-04-23.**
+Параметр `device_model` фильтрует на стороне сервера — клиентская фильтрация не нужна.
+
+---
+
+## ⭐ Реальный POST /api/v1/meter/ payload
+
+Захвачен из production 2026-04-23, это источник истины.
 
 ```json
 {
-  "node": 20,
-  "is_active": true,
-  "type": 1,
-  "resource_type": 1,
-  "join_date": "2026-04-23",
   "serial_number": "TEST001",
+  "join_date": "2026-04-23",
   "join_reading": 0.256,
-  "installation_place": 1,
-  "consumer": "Кириеева И.В",
-  "client_sector": "private",
-  "object_type": 10,
-  "apartment": "43",
-  "account_id": "7496",
-  "phone": "+7 (771) 760-07-48",
   "device": 74716,
+  "node": 20,
+  "resource_type": 1,
+  "type": 1,
+  "device_mode": 33,
+  "port": 2,
+  "client_sector": "private",
+  "installation_place": 1,
+  "object_type": 10,
+  "consumer": "Кириеева И.В",
+  "apartment": "43",
+  "phone": "+7 (771) 760-07-48",
+  "account_id": "7496",
   "description": "",
+  "is_active": true,
   "additional_data": {
     "almaty_su_street_id": "305",
     "district": 2
-  },
-  "device_mode": 33,
-  "device__address": 6831,
-  "port": 2
+  }
 }
 ```
 
-### Field reference
+---
 
-| Field | Type | Required | Source | Notes |
-|-------|------|----------|--------|-------|
-| `serial_number` | string ≤100 | ✅ | manual | meter S/N |
-| `join_date` | YYYY-MM-DD | ✅ | manual / today | install date |
-| `join_reading` | float | ✅ | manual | initial reading |
-| `device` | int | ✅ | EUI search → device.id | gateway |
-| `node` | int | ✅ | **AUTO from resource_type** | water=20/79, see below |
-| `type` | int | ✅ | meter model select | from `/api/v1/meter/model/` |
-| `resource_type` | int | ✅ | radio (cold/hot) | from `/api/v1/resource_type/` |
-| `installation_place` | int | ✅ | select | from `/api/v1/installation_place/` |
-| `object_type` | int | ✅ | select (separate field!) | from `/api/v1/object_type/` |
-| `client_sector` | enum | ✅ | radio | `private`/`legal`/`multi_apartment`/`physical` |
-| `device_mode` | int | ✅ | filtered select | PortMode.id, **filtered by device.type** |
-| `port` | int 1-10 | conditional | auto/manual | required when port_mode requires it |
-| `device__address` | int | optional | **AUTO from device** | Address.id taken from device.address |
-| `is_active` | bool | optional | always true | default true |
-| `description` | string | optional | manual | default `""` |
-| `consumer` | string | optional | manual | name |
-| `apartment` | string | optional | manual | apt |
-| `account_id` | string | optional | manual | personal account |
-| `phone` | string | optional | manual | any format, backend normalizes |
-| `additional_data.almaty_su_street_id` | string | conditional | manual | **ONLY for ХВС** (resource_type=1), the street code |
-| `additional_data.district` | int | optional | **AUTO from device** | district number |
+## Полная спецификация полей MeterListCreate
 
-### Readonly fields (DO NOT send)
+### REQUIRED (без них — 400 Bad Request)
+```
+serial_number  string ≤100    серийный номер счётчика
+join_date      YYYY-MM-DD     дата подключения (default today)
+join_reading   number         показание при подключении
+device         integer        FK на Device (из поиска по EUI)
+```
 
-These come back from server in response, never include in POST:
-`id`, `reading`, `reading_dt`, `sent_date`, `last_reading`, `upload_date`, `upload_status`, `avatar`, `address_code`, `check_date`, `installation`
+### Optional (но нужны для правильной работы)
+```
+node             integer   FK на Node. AUTO по resource_type (ХВС=20, ГВС=79)
+resource_type    integer   FK. 1=ХВС, 2=ГВС, 3=Газ, 4=Электр, 5=Отопление
+type             integer   FK на MeterModel (224 модели)
+device_mode      integer   FK на DeviceMode. ФИЛЬТР: /device/mode/?device_model=N
+port             integer   0-32767. Показывать только если DeviceMode требует!
+client_sector    enum      'private'|'legal'|'multi_apartment'|'physical'
+installation_place integer FK (111 вариантов: С/У, Колодец, Подвал...)
+object_type      integer   FK (228 вариантов: Квартира, Коттедж...) ≠ installation_place!
+consumer         string ≤100
+apartment        string ≤100
+phone            string ≤128  любой формат, бэк нормализует
+account_id       string ≤100
+description      string    default ""
+is_active        boolean   default true
+additional_data  object    JSONField без схемы (см. ниже)
+check_date       date      optional, дата поверки
+```
 
-## ⭐ Auto-node mapping (CRITICAL business logic)
+### additional_data — JSONField без схемы
+
+Бэк не валидирует содержимое. Это extension для интеграторов.
+
+**Для Алматы Су (ХВС, resource_type=1):**
+```json
+{
+  "almaty_su_street_id": "305",   // string, ID улицы в БД Алматы Су
+  "district": 2                    // integer, код района Алматы (НЕ строка!)
+}
+```
+
+**Для ГВС (Алматинские тепловые сети):** поля НЕИЗВЕСТНЫ. Захватить реальный POST для ГВС.
+
+**Для остальных ресурсов:** скорее всего `{}` или null.
+
+### READONLY — НЕ слать в payload
+```
+id, node__name, type__name, resource_type__name,
+device__eui, device__type__name, street, house,
+reading, reading_dt, sent_date, last_reading,
+upload_date, upload_status, avatar
+```
+
+### НЕ существует в Swagger
+```
+device__address  ← нет в MeterListCreate схеме. Убрать из payload.
+```
+
+---
+
+## DeviceMode — структура
+
+```json
+{
+  "id": 22,
+  "name": "Счетчик со встроенным модемом",
+  "class_name": "KazmeterPulseCounterMode",
+  "device_model": 20,
+  "additional_data": null
+}
+```
+
+или
+
+```json
+{
+  "id": 33,
+  "name": "Счетчик импульсов",
+  "class_name": "ExpDeviceGSMPulseCounterMode",
+  "device_model": 31,
+  "additional_data": {
+    "fields": [
+      {"name": "port", "type": "integer", "label": "Порт"}
+    ]
+  }
+}
+```
+
+### Логика поля "Порт"
 
 ```ts
-const AUTO_NODE_BY_RESOURCE: Record<number, number> = {
-  1: 20,   // Холодная вода (ХВС) → ТОО "IoT-Exponenta" Алматы Су
-  2: 79,   // Горячая вода (ГВС) → ТОО «Алматинские тепловые сети»
-  // 3 (Газ), 4 (Электричество), 5 (Отопление) — not auto, future enhancement
+const selectedMode = modes.find(m => m.id === deviceModeId);
+const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
+```
+
+- `additional_data === null` → порт НЕ нужен (встроенный модем)
+- `additional_data.fields` содержит `{name: "port"}` → показывать input Порт
+- `additional_data.fields` содержит `min_reading/max_reading` → датчики, для MVP пропустить
+
+### Автоматика выбора режима
+
+```ts
+const availableModes = response.results; // API уже отфильтровал по device_model
+
+if (availableModes.length === 0) {
+  // "Для этого устройства нет режимов — обратитесь к администратору"
+} else if (availableModes.length === 1) {
+  setDeviceModeId(availableModes[0].id); // auto-select
+} else {
+  // показать dropdown
+}
+```
+
+---
+
+## Device — структура (из DeviceListCreate)
+
+```ts
+interface Device {
+  id: number;
+  eui: string;               // EUI-64, 16 символов
+  type: number;              // FK на DeviceModel → используется для фильтра device/mode/
+  type__name: string;        // readonly "KAZMETER Pro LRW"
+  address: number | null;    // FK на Address
+  address_name: string;      // readonly, computed "ул. Кокбастау, 5"
+  additional_data: {
+    district?: number;       // код района — брать отсюда для Meter.additional_data.district
+    [key: string]: any;
+  } | null;
+  gateway: number | null;
+  network_server: number | null;
+  is_active: boolean;
+  lat: string; lng: string;
+  snr: number | null;
+  rssi: number | null;
+  battery_level: number | null;
+  meters: MeterListInDevice[]; // счётчики уже навешанные на порты
+}
+```
+
+**При выборе Device автоматически заполнить:**
+```ts
+setDeviceId(device.id);
+setDeviceType(device.type);                         // для фильтра device/mode/
+setDeviceAddress(device.address);                   // (не слать в payload!)
+setDisplayAddress(device.address_name);
+setDistrict(device.additional_data?.district ?? null); // → Meter.additional_data.district
+```
+
+---
+
+## Address — структура
+
+```ts
+interface Address {
+  id: number;
+  name: string;            // readonly computed
+  province: string | null; // "Алматинская область"
+  locality: string | null; // "Алматы"
+  area: string | null;     // "Бостандыкский район" (областной район)
+  district: string | null; // "Алмалинский" (городской район) — STRING!
+  street: string | null;
+  house: string | null;
+  lng: number | null;
+  lat: number | null;
+}
+```
+
+⚠️ **`Address.district` это STRING** ("Алмалинский"), а **`Meter.additional_data.district` это INTEGER** (2).
+Это разные сущности — не путать!
+
+---
+
+## ⭐ Auto-node mapping
+
+```ts
+export const AUTO_NODE_BY_RESOURCE: Record<number, number> = {
+  1: 20,   // Холодная вода → ТОО "IoT-Exponenta" Алматы Су
+  2: 79,   // Горячая вода → ТОО «Алматинские тепловые сети»
 };
 
-const NODE_LABELS: Record<number, string> = {
-  20: 'ГКП "Алматы Су" → ТОО "IoT-Exponenta" Алматы Су',
+export const NODE_LABELS: Record<number, string> = {
+  20: 'ТОО "IoT-Exponenta" Алматы Су',
   79: 'ТОО «Алматинские тепловые сети»',
 };
 ```
 
-**Bug to fix:** current code has `setNode(21)` for hot water — that's wrong, should be 79.
+---
 
-## ⭐ Port Mode endpoint
+## Resource Types — все 9
 
-**Endpoint found:** `GET /api/v1/port_mode/?page_size=100` returns 36 modes.
+```
+id=1   ХВС   Холодная вода
+id=2   ГВС   Горячая вода
+id=3   ГС    Газ
+id=4   ЭС    Электричество
+id=5   ТС    Отопление
+id=6         Видеонаблюдение
+id=7         Датчик вскрытия
+id=8         Датчик влажности
+id=10        Датчик давления    ← id=10 (не 9!)
+```
 
-**NOT** `/api/v1/device_mode/` (that's 404).
+---
 
-### Response shape
+## Device Models — все 33 (для DeviceMode фильтрации)
 
-```json
-{
-  "count": 36,
-  "results": [
-    {
-      "id": 33,
-      "name": "Счетчик импульсов",
-      "class_name": "ExpDeviceGSMPulseCounterMode",
-      "additional_data": {
-        "fields": [
-          {"name": "port", "type": "integer", "label": "Порт"}
-        ]
-      },
-      "device_model": 31
-    }
-  ]
+```
+id=1   ORIONMETER ORN-TWM       class=OrionMeter_ORN_TWM    ports=1
+id=2   ORIONMETER LA-IP          class=OrionMeter_LA_IP      ports=3
+id=3   Бетар-Вега СХВЭ/СГВЭ     class=VegaBetar             ports=1
+id=4   Вега СИ-11                class=VegaSi11              ports=4
+id=5   ТЕРМИНАЛ-М-LRW            class=Terminal_M_LRW        ports=4
+id=6   Smart-2 Pro NB-IOT        class=Smart2ProNBIoT        ports=4
+id=7   ORIONMETER LA-IP-RSP      class=OrionMeter_LA_IP_RSP  ports=3
+id=8   Бетар СХВЭ/СГВЭ Карат    class=KaratBetar            ports=1
+id=9   SmartLighting NB-IoT      class=SmartLightingNBIoT    ports=1
+id=10  ТРИТОН-10                 class=Triton10              ports=10
+id=11  Smart Aqua 1.0            class=SmartAqua1            ports=1
+id=12  TELEOFIS RTU102           class=TeleofisRTU102        ports=6
+id=13  ДЕКАСТ ВСКМ iWAN          class=DecastVSKM            ports=1
+id=14  ДЕКАСТ СТК МАРС «NEO»    class=DecastSTKMarsNEO      ports=1
+id=15  ExpDevice WF              class=ExpDeviceWF           ports=2
+id=18  ExpDevice LRW             class=Terminal_M_LRW        ports=10
+id=19  ExpDevice LRW 6-й/8-й    class=Terminal_M_LRW_6_8    ports=8
+id=20  KAZMETER Pro LRW          class=Kazmeter              ports=1   ← mode id=22
+id=21  SmartPress NB-IoT         class=SmartPressNBIoT       ports=1
+id=22  ExpDevice Eth             class=ExpDeviceEth          ports=2
+id=23  Smart-10 Pro NB-IOT       class=Smart10ProNBIoT       ports=10
+id=24  Пульсар модель 1          class=PulsarM1              ports=1   ← mode id=28
+id=25  МУР1001.9                 class=MUR1001_9GSM          ports=2
+id=26  Пульсар Lite              class=PulsarLite            ports=1
+id=27  ВВТ NB-IoT                class=VVTNBIoT              ports=1
+id=28  SmartOn EE 1              class=SmartOnEE1            ports=1
+id=29  Qalcosonic W1             class=QalcosonicW1          ports=1
+id=30  RAK Field Tester          class=RAKFieldTester        ports=1
+id=31  ExpDevice GSM             class=ExpDeviceGSM          ports=10  ← mode id=33 (port req.)
+id=32  ExpDevice NB-IoT          class=ExpDeviceNBIoT        ports=2
+id=33  Kazmeter NB-IoT           class=KazmeterNBIoT         ports=1
+id=34  Goldcard LXDG-15          class=GoldcardLXDG15        ports=1
+id=35  Goldcard LXC-15FC         class=GoldcardLXC15FC       ports=1
+```
+
+---
+
+## Кэширование справочников
+
+Все списки кэшировать в localStorage, TTL 24h.
+
+```ts
+async function loadCached<T>(key: string, fetcher: () => Promise<T[]>): Promise<T[]> {
+  const cached = localStorage.getItem(key + '_data');
+  const ts = localStorage.getItem(key + '_ts');
+  if (cached && ts && Date.now() - Number(ts) < 86_400_000) {
+    return JSON.parse(cached);
+  }
+  const data = await fetcher();
+  localStorage.setItem(key + '_data', JSON.stringify(data));
+  localStorage.setItem(key + '_ts', String(Date.now()));
+  return data;
 }
 ```
 
-### Critical filtering logic
+**DeviceMode** — НЕ кэшировать глобально. Загружать **по требованию** при выборе устройства
+(`/device/mode/?device_model={N}`) и кэшировать отдельно по ключу `dm_modes_{deviceModelId}`.
 
-Each `port_mode` has `device_model` FK. When user selects a device, **only show modes matching device.type**:
+---
+
+## Известные баги в текущем коде (статус April 2026)
+
+1. ❌ ГВС → node **21** (должно быть **79**)
+2. ❌ `client_sector: "legal"` хардкод → нужен UI radio
+3. ❌ `district: 2` хардкод → брать из `device.additional_data.district`
+4. ❌ `object_type = installation_place` → разные поля, разные справочники
+5. ❌ Нет `device_mode` в payload → добавить через `/api/v1/device/mode/?device_model=N`
+6. ❌ `device__address` шлётся в payload → убрать (нет в Swagger)
+7. ❌ `meterModels.ts` static (32) → заменить на `GET /api/v1/meter/model/?page_size=300`
+8. ❌ Mojibake в строках (`РЎРµСЂРёР№РЅС‹Р№` вместо `Серийный`)
+9. ❌ `endpoints.installation = '/api/v1/installation/'` → удалить (404)
+10. ❌ port_mode endpoint `/port_mode/` → исправить на `/device/mode/?device_model=N`
+11. ❌ Поле "Порт" всегда видно → скрывать если DeviceMode не требует
+
+---
+
+## Locked product decisions
+
+- **Login screen — оставить** (существующий AuthContext + localStorage)
+- **NO фото в payload Meter** (avatar через отдельный endpoint, для MVP не нужно)
+- **Single-page form** для NewInstallation (без wizard)
+- **Auto-node для воды** по таблице выше
+- **Drafts через localStorage** — сохранить
+- **QR scanner** — сохранить
+- **Yandex Geocoder** — сохранить (починить encoding)
+- **Capacitor / Android** — НЕ нужен, веб PWA на мобильных браузерах
+
+---
+
+## TypeScript types (финальные)
 
 ```ts
-const availableModes = allModes.filter(m => m.device_model === selectedDevice?.type);
-```
+export type ClientSector = 'private' | 'legal' | 'multi_apartment' | 'physical';
 
-- 0 results → "Для этого устройства нет доступных режимов"
-- 1 result → auto-select, show as readonly
-- multiple → dropdown
+export interface MeterAdditionalData {
+  almaty_su_street_id?: string;
+  district?: number;
+  [key: string]: unknown;
+}
 
-### Conditional `port` field
+export interface MeterCreatePayload {
+  // Required
+  serial_number: string;
+  join_date: string;
+  join_reading: number;
+  device: number;
+  // Strongly recommended
+  node?: number;
+  resource_type?: number;
+  type?: number;             // MeterModel.id (224 шт)
+  device_mode?: number;     // DeviceMode.id (из /device/mode/?device_model=N)
+  port?: number;            // только если DeviceMode.additional_data.fields содержит port
+  client_sector?: ClientSector;
+  installation_place?: number;
+  object_type?: number;     // ОТДЕЛЬНО от installation_place!
+  // Consumer
+  consumer?: string;
+  apartment?: string;
+  phone?: string;
+  account_id?: string;
+  description?: string;
+  is_active?: boolean;
+  // Extension
+  additional_data?: MeterAdditionalData;
+}
 
-`port_mode.additional_data.fields` describes extra fields:
-- `null` or missing → no extra fields, `port` is NOT needed in payload
-- `[{name: "port", type: "integer"}]` → show Port number input (1-10)
-- `[{name: "min_reading"}, {name: "max_reading"}]` → sensor mode, log+skip for MVP
+export interface PortMode {
+  id: number;
+  name: string;
+  class_name: string | null;
+  device_model: number;
+  additional_data: {
+    fields?: Array<{ name: string; type: string; label: string }>;
+  } | null;
+}
 
-```tsx
-const selectedMode = portModes.find(m => m.id === watch('device_mode'));
-const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
+export interface DeviceModel {
+  id: number;
+  name: string;
+  class_name: string;
+  num_of_ports: number;
+  len_of_eui: number;
+  trans_tech_type?: number | null;
+}
 
-{needsPort && <PortInput />}
-```
-
-## Dictionaries (cache 24h in localStorage or in-memory)
-
-| Endpoint | Count | What for |
-|----------|-------|----------|
-| `/api/v1/resource_type/` | 9+ | ХВС, ГВС, Газ, Электричество, Отопление |
-| `/api/v1/meter/model/` | 32 | Pulse, Betar, Zenner, etc. |
-| `/api/v1/installation_place/` | 111 | С/У, Колодец, Подвал, etc. |
-| `/api/v1/object_type/` | 228 | Квартира, Коттедж, Офис, etc. |
-| `/api/v1/port_mode/` | 36 | Port modes (filter by device_model) |
-| `/api/v1/node/type/` | 31 | Node hierarchy types (informational) |
-
-**Important:** the static `assets/meterModels.ts` file is STALE. Replace usage with API calls to `/api/v1/meter/model/` and cache, OR update the static file to match (worse, will go stale again).
-
-## Phone format
-
-Frontend accepts `+7 (771) 760-07-48` style input.
-Backend normalizes to `+77717600748`.
-Sending either format is OK — backend handles both. **Don't over-engineer normalization.**
-
-## Mojibake fix
-
-Many Russian strings in `*.tsx` and `streets.json` are corrupted UTF-8 (saved as Windows-1251 / Latin-1, then re-read as UTF-8). They look like `РЎРµСЂРёР№РЅС‹Р№` instead of `Серийный`.
-
-Fix strategy:
-- Replace strings file-by-file with proper Cyrillic
-- For `streets.json` (which uses Russian as KEY NAMES) — keys `Название`/`Код` are inconvenient. Consider migrating to English keys (`name`, `code`) but that requires updating every consumer of streets data. For MVP, keep keys but ensure file saved as UTF-8 BOM.
-- After each file, verify in browser the rendered text is Cyrillic, not garbage.
-
-## Product decisions (LOCKED)
-
-- **No photos in POST payload.** Photo capture UI may stay as installer's offline memo / future enhancement. NOT included in `/api/v1/meter/` body.
-- **Auth screen stays.** Don't remove login. Don't replace with env token.
-- **Single-page form**, no wizard.
-- **Auto-node for water resources** (resource_type=1 → 20, resource_type=2 → 79).
-- **Drafts via localStorage** stay.
-- **QR scanner stays.**
-- **Yandex Geocoder stays** (with mojibake fix).
-
-## Open questions (in `docs/questions-for-backend.md`)
-
-1. Confirm `device_mode` field name — should be `device_mode` or `port_mode_id`?
-2. `additional_data.district` — does backend expect integer or string?
-3. CORS whitelist for our deploy domain?
-4. Backend recovery: if POST `/api/v1/meter/` succeeds but UI dies before reading response — is there idempotency on serial_number+device combo?
-5. Phone format: bare digits `+77001234567` vs masked `+7 (700) 123-45-67` — does backend prefer one?
-
-## Repo layout (current)
-
-```
-metrix-installer/
-├── src/
-│   ├── api/
-│   │   └── index.ts              # axios + endpoints
-│   ├── assets/
-│   │   ├── meterModels.ts        # STALE static — replace with API
-│   │   └── streets.json          # Almaty Su streets (mojibake keys)
-│   ├── components/
-│   │   ├── Layout.tsx
-│   │   └── ProtectedRoute.tsx
-│   ├── context/
-│   │   └── AuthContext.tsx       # token persistence
-│   ├── pages/
-│   │   ├── Login.tsx
-│   │   ├── NewInstallation.tsx   # ⭐ THE form, has all bugs
-│   │   ├── History.tsx           # drafts + history list
-│   │   └── Profile.tsx (?)
-│   ├── types/
-│   │   └── index.ts              # InstallationData interface
-│   ├── App.tsx                   # routing
-│   ├── main.tsx
-│   └── index.css
-├── package.json
-└── vite.config.ts
+export interface Street {
+  Название: string;   // mojibake key — оставить как есть, не переименовывать
+  Код: string;
+}
 ```

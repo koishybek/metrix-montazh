@@ -52,6 +52,7 @@ const NewInstallation: React.FC = () => {
   const [isPortLocked, setIsPortLocked] = useState(false); // If true, user can't change port (e.g. Kazmeter)
   const [portModes, setPortModes] = useState<PortMode[]>([]);
   const [portModeId, setPortModeId] = useState<number | null>(null);
+  const [loadingModes, setLoadingModes] = useState(false);
 
   // 3. Meter Selection
   const [meterModels, setMeterModels] = useState<MeterModel[]>([]);
@@ -159,7 +160,6 @@ const NewInstallation: React.FC = () => {
       }
     };
 
-    loadCachedOrFetch('port_modes_cache', 'port_modes_ts', setPortModes, getPortModes);
     loadCachedOrFetch('meter_models_cache', 'meter_models_ts', setMeterModels, getMeterModels);
   }, []);
 
@@ -275,7 +275,7 @@ const NewInstallation: React.FC = () => {
     }
   };
 
-  const selectDevice = (device: any) => {
+  const selectDevice = async (device: any) => {
     setModemSerial(device.eui || device.serial_number);
     setDeviceId(device.id);
     setDeviceAddress(device.address);
@@ -286,6 +286,22 @@ const NewInstallation: React.FC = () => {
     setDeviceType(dType);
     setDeviceTypeName(device.type_name || `Type ${dType}`);
     setPortModeId(null); // Reset port mode on device change
+
+    // Fetch port modes for this device model
+    setLoadingModes(true);
+    try {
+      const modes = await getPortModes(dType);
+      setPortModes(modes);
+      
+      // Auto-select if only one mode
+      if (modes.length === 1) {
+        setPortModeId(modes[0].id);
+      }
+    } catch (err) {
+      console.error('Failed to fetch port modes', err);
+    } finally {
+      setLoadingModes(false);
+    }
 
     // -- AUTOMATED PORT LOGIC --
     if (dType === 20) {
@@ -516,13 +532,17 @@ const NewInstallation: React.FC = () => {
           <section className="space-y-2">
             <label className="text-sm font-semibold text-gray-700">Режим работы <span className="text-red-500">*</span></label>
             <div className="relative">
-              {(() => {
-                const availableModes = portModes.filter(m => m.device_model === deviceType);
+              {loadingModes ? (
+                <div className="flex items-center justify-center p-4 bg-gray-50 rounded-xl">
+                  <Loader2 className="animate-spin text-blue-600 mr-2" size={20} />
+                  <span className="text-sm text-gray-500">Загрузка режимов...</span>
+                </div>
+              ) : (() => {
+                const availableModes = portModes; // API already filtered by device_model
                 if (availableModes.length === 0) {
                   return <div className="p-4 bg-yellow-50 text-yellow-700 rounded-xl text-sm">Для этого устройства нет доступных режимов</div>;
                 }
                 if (availableModes.length === 1) {
-                  if (portModeId !== availableModes[0].id) setPortModeId(availableModes[0].id);
                   return (
                     <div className="p-4 bg-blue-50 text-blue-700 rounded-xl text-sm font-medium border border-blue-100 flex items-center justify-between">
                       {availableModes[0].name}
