@@ -1,0 +1,15 @@
+
+> metrix-installer@0.0.0 build
+> tsc -b && vite build
+
+src/components/Sidebar.tsx(4,54): error TS6133: 'LayoutDashboard' is declared but its value is never read.
+src/components/Sidebar.tsx(9,9): error TS6133: 'location' is declared but its value is never read.
+src/pages/History.tsx(4,27): error TS6133: 'AlertTriangle' is declared but its value is never read.
+src/pages/NewInstallation.tsx(5,41): error TS6133: 'AlertCircle' is declared but its value is never read.
+src/pages/NewInstallation.tsx(5,76): error TS6133: 'Save' is declared but its value is never read.
+src/pages/NewInstallation.tsx(9,15): error TS6196: 'MeterModel' is declared but never used.
+src/pages/NewInstallation.tsx(13,9): error TS6133: 'navigate' is declared but its value is never read.
+src/pages/NewInstallation.tsx(15,9): error TS6133: 'logout' is declared but its value is never read.
+src/pages/NewInstallation.tsx(20,10): error TS6133: 'error' is declared but its value is never read.
+src/pages/NewInstallation.tsx(255,11): error TS6133: 'err' is declared but its value is never read.
+src/pages/Profile.tsx(3,10): error TS6133: 'User' is declared but its value is never read.

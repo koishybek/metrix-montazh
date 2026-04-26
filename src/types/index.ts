@@ -13,24 +13,38 @@ export interface Street {
   Код: string;
 }
 
-export interface InstallationData {
-  node: number;
-  resource_type: number;
-  type: number;
-  serial_number: string;
-  join_reading: number;
-  installation_place: number;
-  apartment: string;
-  consumer: string;
-  phone: string;
-  account_id: string;
-  join_date: string;
-  client_sector: string;
-  object_type: number;
-  additional_data: {
-    almaty_su_street_id: string;
-    district: number;
-  };
-  device?: number;
-  port?: number;
+export interface InstallationData { 
+  node: number; 
+  resource_type: number; 
+  type: number; 
+  serial_number: string; 
+  join_reading: number; 
+  installation_place: number; 
+  object_type: number;          // обязательное, не из installation_place 
+  apartment?: string; 
+  consumer?: string; 
+  phone?: string; 
+  account_id?: string; 
+  join_date: string; 
+  client_sector: 'private' | 'legal' | 'multi_apartment' | 'physical'; 
+  description?: string; 
+  is_active?: boolean; 
+  additional_data?: { 
+    almaty_su_street_id?: string; 
+    district?: number; 
+  }; 
+  device: number; 
+  device__address?: number; 
+  device_mode: number; 
+  port?: number; 
+} 
+
+export interface PortMode { 
+  id: number; 
+  name: string; 
+  class_name: string; 
+  device_model: number; 
+  additional_data: { 
+    fields?: Array<{ name: string; type: string; label: string }>; 
+  } | null; 
 }

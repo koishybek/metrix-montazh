@@ -1,9 +1,10 @@
 import axios from 'axios';
+import type { PortMode, MeterModel } from '../types';
 
-const API_URL = 'https://sm.iot-exp.kz';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://sm.iot-exp.kz';
 
 const api = axios.create({
-    baseURL: API_URL,
+    baseURL: API_BASE_URL,
     headers: {
         'Content-Type': 'application/json',
     },
@@ -40,10 +41,19 @@ api.interceptors.response.use(
 export const endpoints = {
     auth: '/api-token-auth/',
     meterModels: '/api/v1/meter/model/',
-    installation: '/api/v1/installation/', // Assuming this is the correct endpoint for the combined payload
-    // If the above doesn't work, we might need these:
     device: '/api/v1/device/',
     meter: '/api/v1/meter/',
+    portMode: '/api/v1/port_mode/',
+};
+
+export const getPortModes = async (): Promise<PortMode[]> => {
+    const res = await api.get(`${endpoints.portMode}?page_size=100`);
+    return res.data.results;
+};
+
+export const getMeterModels = async (): Promise<MeterModel[]> => {
+    const res = await api.get(`${endpoints.meterModels}?page_size=100`);
+    return res.data.results;
 };
 
 export default api;

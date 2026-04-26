@@ -1,0 +1,7 @@
+
+> metrix-installer@0.0.0 build
+> tsc -b && vite build
+
+src/components/Sidebar.tsx(2,32): error TS6133: 'useLocation' is declared but its value is never read.
+src/pages/NewInstallation.tsx(2,10): error TS6133: 'useNavigate' is declared but its value is never read.
+src/pages/NewInstallation.tsx(10,1): error TS6133: 'useAuth' is declared but its value is never read.

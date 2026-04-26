@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
-import { FileText, Clock, AlertTriangle, CheckCircle, ArrowRight, Trash2 } from 'lucide-react';
+import { FileText, Clock, CheckCircle, ArrowRight, Trash2 } from 'lucide-react';
 
 const History: React.FC = () => {
   const navigate = useNavigate();
@@ -32,7 +32,7 @@ const History: React.FC = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-8">
-      
+
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">История и Черновики</h1>
@@ -67,7 +67,7 @@ const History: React.FC = () => {
                   </div>
                   <span className="bg-yellow-100 text-yellow-700 text-xs px-2 py-1 rounded-lg font-bold">Draft</span>
                 </div>
-                
+
                 <div className="space-y-1 text-sm text-gray-600 mb-4">
                   <div className="flex items-center gap-2">
                     <span className="text-gray-400">Модем:</span>
@@ -80,13 +80,13 @@ const History: React.FC = () => {
                 </div>
 
                 <div className="flex gap-2">
-                  <button 
+                  <button
                     onClick={() => continueDraft(draft)}
                     className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-blue-700 transition flex items-center justify-center gap-2"
                   >
                     Продолжить <ArrowRight size={16} />
                   </button>
-                  <button 
+                  <button
                     onClick={() => deleteDraft(i)}
                     className="px-3 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition"
                   >
