@@ -392,18 +392,12 @@ const NewInstallation: React.FC = () => {
       const payload: any = {
         serial_number: meterNumber || "",
         description: description || "",
-        port: needsPort ? Number(port) : null,
+        ...(needsPort ? { port: Number(port) } : {}),
         join_date: joinDate,
         check_date: null,
         join_reading: Number(joinReading),
-        sent_date: null,
-        last_reading: null,
-        upload_date: null,
-        upload_status: "",
         is_active: true,
         client_sector: clientSector,
-        avatar: null,
-        address_code: "",
         additional_data: (() => {
           if (resourceType === 'cold') {
             const streetId = selectedStreet?.Код;
@@ -412,7 +406,7 @@ const NewInstallation: React.FC = () => {
               ...(deviceDistrict !== null ? { district: deviceDistrict } : {})
             };
           }
-          return null;
+          return {};
         })(),
         consumer: consumerName || "",
         apartment: apartment || "",
@@ -427,6 +421,8 @@ const NewInstallation: React.FC = () => {
         node: node,
         installation: null,
       };
+
+      console.log('Sending payload:', JSON.stringify(payload, null, 2));
 
       // Create Meter
       await api.post(endpoints.meter, payload);
