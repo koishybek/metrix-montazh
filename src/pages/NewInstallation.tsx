@@ -6,7 +6,7 @@ import { Camera, MapPin, QrCode, Check, ChevronDown, Loader2 } from 'lucide-reac
 import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes } from '../api';
 import streetsData from '../assets/streets.json';
 import { AUTO_NODE_BY_RESOURCE } from '../constants/resourceNodes';
-import type { Street, InstallationData, PortMode, MeterModel } from '../types';
+import type { Street, PortMode, MeterModel } from '../types';
 
 interface DictionaryItem {
   id: number;
@@ -386,45 +386,46 @@ const NewInstallation: React.FC = () => {
     setSubmitting(true);
 
     try {
-      // НОВАЯ логика additional_data:
-      const additionalData = (() => {
-        // Только для ХВС (resourceType === 'cold') шлём almaty_su_street_id
-        // И только если улица реально выбрана (Код не пустой и не "0")
-        if (resourceType === 'cold') {
-          const streetId = selectedStreet?.Код;
-          return {
-            ...(streetId && streetId !== "0" ? { almaty_su_street_id: streetId } : {}),
-            ...(deviceDistrict !== null ? { district: deviceDistrict } : {})
-          };
-        }
-        // Для ГВС и остальных — пока не шлём additional_data
-        // (формат для ГВС неизвестен, лучше null чем 500)
-        return null;
-      })();
-
       const selectedMode = portModes.find(m => m.id === portModeId);
       const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
 
-      const payload: InstallationData = {
-        node: node,
-        resource_type: resourceType === 'cold' ? 1 : 2,
-        type: Number(selectedMeterModelId), // Selected Meter ID
-        serial_number: meterNumber,
-        join_reading: Number(joinReading),
-        installation_place: Number(installationPlace),
-        apartment: apartment,
-        consumer: consumerName,
-        phone: consumerPhone,
-        account_id: accountId,
+      const payload: any = {
+        serial_number: meterNumber || "",
+        description: description || "",
+        port: needsPort ? Number(port) : null,
         join_date: joinDate,
-        client_sector: clientSector,
-        object_type: objectType,
-        description: description,
+        check_date: null,
+        join_reading: Number(joinReading),
+        sent_date: null,
+        last_reading: null,
+        upload_date: null,
+        upload_status: "",
         is_active: true,
-        device: deviceId,
+        client_sector: clientSector,
+        avatar: null,
+        address_code: "",
+        additional_data: (() => {
+          if (resourceType === 'cold') {
+            const streetId = selectedStreet?.Код;
+            return {
+              ...(streetId && streetId !== "0" ? { almaty_su_street_id: streetId } : {}),
+              ...(deviceDistrict !== null ? { district: deviceDistrict } : {})
+            };
+          }
+          return null;
+        })(),
+        consumer: consumerName || "",
+        apartment: apartment || "",
+        phone: consumerPhone || "",
+        account_id: accountId || "",
         device_mode: portModeId,
-        ...(needsPort ? { port: Number(port) } : {}),
-        ...(additionalData !== null ? { additional_data: additionalData } : {})
+        type: Number(selectedMeterModelId) || null,
+        object_type: Number(objectType) || null,
+        installation_place: Number(installationPlace) || null,
+        device: deviceId,
+        resource_type: resourceType === 'cold' ? 1 : 2,
+        node: node,
+        installation: null,
       };
 
       // Create Meter
