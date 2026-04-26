@@ -394,7 +394,6 @@ const NewInstallation: React.FC = () => {
         description: description || "",
         ...(needsPort ? { port: Number(port) } : {}),
         join_date: joinDate,
-        check_date: null,
         join_reading: Number(joinReading),
         is_active: true,
         client_sector: clientSector,
@@ -403,7 +402,7 @@ const NewInstallation: React.FC = () => {
             const streetId = selectedStreet?.Код;
             return {
               ...(streetId && streetId !== "0" ? { almaty_su_street_id: streetId } : {}),
-              ...(deviceDistrict !== null ? { district: deviceDistrict } : {})
+              district: deviceDistrict || 2
             };
           }
           return {};
@@ -419,7 +418,6 @@ const NewInstallation: React.FC = () => {
         device: deviceId,
         resource_type: resourceType === 'cold' ? 1 : 2,
         node: node,
-        installation: null,
       };
 
       console.log('Sending payload:', JSON.stringify(payload, null, 2));
