@@ -43,16 +43,19 @@ export const endpoints = {
     meterModels: '/api/v1/meter/model/',
     device: '/api/v1/device/',
     meter: '/api/v1/meter/',
-    portMode: '/api/v1/port_mode/',
+    deviceMode: '/api/v1/device/mode/',
 };
 
-export const getPortModes = async (): Promise<PortMode[]> => {
-    const res = await api.get(`${endpoints.portMode}?page_size=100`);
+export const getPortModes = async (deviceModelId?: number): Promise<PortMode[]> => {
+    const url = deviceModelId 
+        ? `${endpoints.deviceMode}?device_model=${deviceModelId}&page_size=100`
+        : `${endpoints.deviceMode}?page_size=100`;
+    const res = await api.get(url);
     return res.data.results;
 };
 
 export const getMeterModels = async (): Promise<MeterModel[]> => {
-    const res = await api.get(`${endpoints.meterModels}?page_size=100`);
+    const res = await api.get(`${endpoints.meterModels}?page_size=300`);
     return res.data.results;
 };
 
