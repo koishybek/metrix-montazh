@@ -401,6 +401,9 @@ const NewInstallation: React.FC = () => {
         return null;
       })();
 
+      const selectedMode = portModes.find(m => m.id === portModeId);
+      const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
+
       const payload: InstallationData = {
         node: node,
         resource_type: resourceType === 'cold' ? 1 : 2,
@@ -419,14 +422,9 @@ const NewInstallation: React.FC = () => {
         is_active: true,
         device: deviceId,
         device_mode: portModeId,
+        ...(needsPort ? { port: Number(port) } : {}),
         ...(additionalData !== null ? { additional_data: additionalData } : {})
       };
-
-      const selectedMode = portModes.find(m => m.id === portModeId);
-      const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port');
-      if (needsPort) {
-        payload.port = port;
-      }
 
       // Create Meter
       await api.post(endpoints.meter, payload);
