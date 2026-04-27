@@ -31,6 +31,7 @@ const NewInstallation: React.FC = () => {
   // 2. Modem Serial / Device
   const [modemSerial, setModemSerial] = useState('');
   const [deviceId, setDeviceId] = useState<number | null>(null); // Store selected device ID
+  const [deviceAddress, setDeviceAddress] = useState<number | null>(null); // Store device address FK (required by backend)
   const [deviceType, setDeviceType] = useState<number | null>(null); // Store device model ID (18, 20, 31, etc.)
   const [deviceTypeName, setDeviceTypeName] = useState<string>(''); // For display
   const [deviceDistrict, setDeviceDistrict] = useState<number | null>(null);
@@ -251,6 +252,7 @@ const NewInstallation: React.FC = () => {
     const value = e.target.value;
     setModemSerial(value);
     setDeviceId(null);
+    setDeviceAddress(null); // Reset device address when EUI changes
     setDeviceType(null);
     setDeviceTypeName('');
     setIsPortLocked(false);
@@ -277,6 +279,7 @@ const NewInstallation: React.FC = () => {
   const selectDevice = async (device: any) => {
     setModemSerial(device.eui || device.serial_number);
     setDeviceId(device.id);
+    setDeviceAddress(device.address ?? null); // Backend requires device__address
     setDeviceDistrict(device.additional_data?.district ?? null);
 
     // Store device type info
@@ -416,6 +419,7 @@ const NewInstallation: React.FC = () => {
         object_type: Number(objectType) || null,
         installation_place: Number(installationPlace) || null,
         device: deviceId,
+        device__address: deviceAddress, // Required by backend views.py line 574
         resource_type: resourceType === 'cold' ? 1 : 2,
         node: node,
       };
