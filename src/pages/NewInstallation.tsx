@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { format } from 'date-fns';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { Camera, MapPin, QrCode, Check, ChevronDown, Loader2 } from 'lucide-react';
+import { QrCode, Check, ChevronDown, Loader2, Search } from 'lucide-react';
+import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
 import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes } from '../api';
 import streetsData from '../assets/streets.json';
 import { AUTO_NODE_BY_RESOURCE } from '../constants/resourceNodes';
@@ -17,21 +18,20 @@ const NewInstallation: React.FC = () => {
   const location = useLocation();
 
   // -- State --
-  const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [, setError] = useState<string | null>(null);
 
   // 1. Resource Type & Hidden Fields
   const [resourceType, setResourceType] = useState<'cold' | 'hot' | null>(null);
   const [node, setNode] = useState<number>(20);
-  const [clientSector, setClientSector] = useState<'private' | 'legal' | 'multi_apartment' | 'physical'>('private');
+  const [clientSector, setClientSector] = useState<'private' | 'legal' | 'multi_apartment' | 'physical'>('legal');
   const [description, setDescription] = useState('');
   const [joinDate] = useState(format(new Date(), 'yyyy-MM-dd'));
 
   // 2. Modem Serial / Device
   const [modemSerial, setModemSerial] = useState('');
   const [deviceId, setDeviceId] = useState<number | null>(null); // Store selected device ID
-  const [deviceAddress, setDeviceAddress] = useState<number | null>(null); // Store device address FK (required by backend)
+  const [, setDeviceAddress] = useState<number | null>(null); // Store device address FK (required by backend)
   const [deviceType, setDeviceType] = useState<number | null>(null); // Store device model ID (18, 20, 31, etc.)
   const [deviceTypeName, setDeviceTypeName] = useState<string>(''); // For display
   const [deviceDistrict, setDeviceDistrict] = useState<number>(2); // Default to C (2) for Almaty Su
@@ -49,27 +49,21 @@ const NewInstallation: React.FC = () => {
   // 3. Meter Selection
   const [meterModels, setMeterModels] = useState<MeterModel[]>([]);
   const [selectedMeterModelId, setSelectedMeterModelId] = useState<string>('');
+  const [meterSearchTerm, setMeterSearchTerm] = useState('');
+  const [showMeterSuggestions, setShowMeterSuggestions] = useState(false);
 
   // 4. Meter Number
   const [meterNumber, setMeterNumber] = useState('');
 
   // 5. Address
   const [address, setAddress] = useState('');
+  const [houseNumber, setHouseNumber] = useState('');
   const [suggestedStreets, setSuggestedStreets] = useState<Street[]>([]);
   const [selectedStreet, setSelectedStreet] = useState<Street | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [manualStreetCode, setManualStreetCode] = useState<string>('');
-  const [isAddressModalOpen, setIsAddressModalOpen] = useState(false);
-  const [newAddressData, setNewAddressData] = useState({
-    province: 'г. Алматы',
-    locality: 'г. Алматы',
-    area: 'городской акимат Алматы',
-    district: '',
-    street: '',
-    house: '',
-    lng: null as number | null,
-    lat: null as number | null,
-  });
+  const [currentCoords, setCurrentCoords] = useState<{lat: number, lng: number}>({ lat: 43.238949, lng: 76.889709 });
+  const [mapState, setMapState] = useState({ center: [43.238949, 76.889709], zoom: 12 });
 
   // 6. Installation Place
   const [installationPlaces, setInstallationPlaces] = useState<DictionaryItem[]>([]);
@@ -112,10 +106,11 @@ const NewInstallation: React.FC = () => {
   // 11. Readings
   const [joinReading, setJoinReading] = useState('');
 
-  // 12. Photos
-  const [photos, setPhotos] = useState<string[]>([]);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  // 12. Photos (Removed)
+  // const [photos, setPhotos] = useState<string[]>([]);
+  const [, setPhotos] = useState<string[]>([]); // Keep setter for reset logic without error
+  // const videoRef = useRef<HTMLVideoElement>(null);
+  // const [isCameraOpen, setIsCameraOpen] = useState(false);
 
   // -- Effects --
 
@@ -127,12 +122,23 @@ const NewInstallation: React.FC = () => {
       setModemSerial(draft.modemSerial || '');
       setMeterNumber(draft.meterNumber || '');
       setAddress(draft.address || '');
+      setHouseNumber(draft.houseNumber || '');
       setConsumerName(draft.consumerName || '');
-      setConsumerPhone(draft.consumerPhone || '');
+      setConsumerPhone(draft.consumerPhone || '+7(7');
       setAccountId(draft.accountId || '');
       setJoinReading(draft.joinReading || '');
+      setDescription(draft.description || '');
+      setPort(draft.port || 1);
+      setPortModeId(draft.device_mode || null);
+      setSelectedMeterModelId(draft.type?.toString() || '');
+      setInstallationPlace(draft.installation_place?.toString() || '');
+      setObjectType(draft.object_type?.toString() || '');
       setApartment(draft.apartment || '');
-      // Restore other fields as needed
+      setClientSector(draft.client_sector || 'legal');
+      
+      if (draft.modemSerial) {
+        setModemSerial(draft.modemSerial);
+      }
     }
   }, [location]);
 
@@ -144,6 +150,29 @@ const NewInstallation: React.FC = () => {
       setNode(AUTO_NODE_BY_RESOURCE[2]);
     }
   }, [resourceType]);
+
+  // Update map when house number changes
+  useEffect(() => {
+    if (address && houseNumber && houseNumber.length > 0) {
+      const timeoutId = setTimeout(() => {
+        const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
+        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=Алматы, ${address}, ${houseNumber}&format=json`)
+          .then(res => res.json())
+          .then(data => {
+            const geoObject = data.response.GeoObjectCollection.featureMember[0]?.GeoObject;
+            if (geoObject) {
+              const pos = geoObject.Point.pos.split(' ');
+              const lng = parseFloat(pos[0]);
+              const lat = parseFloat(pos[1]);
+              setCurrentCoords({ lat, lng });
+              setMapState(prev => ({ ...prev, center: [lat, lng], zoom: 18 }));
+            }
+          })
+          .catch(err => console.error('House geocode error', err));
+      }, 1000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [address, houseNumber]);
 
   // Load Port Modes and Meter Models with Caching
   useEffect(() => {
@@ -204,14 +233,21 @@ const NewInstallation: React.FC = () => {
     if (value.length > 2) {
       const timeoutId = setTimeout(() => {
         const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
-        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=${value}&format=json`)
+        // Add bbox for Almaty and focus search
+        const almatyBbox = '76.7,43.1,77.1,43.4'; 
+        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=Алматы, ${value}&bbox=${almatyBbox}&format=json`)
           .then(res => res.json())
           .then(data => {
             const featureMember = data.response.GeoObjectCollection.featureMember;
-            const suggestions: Street[] = featureMember.map((item: any) => ({
-              Название: item.GeoObject.metaDataProperty.GeocoderMetaData.text,
-              Код: "0"
-            }));
+            const suggestions: Street[] = featureMember.map((item: any) => {
+              const pos = item.GeoObject.Point.pos.split(' ');
+              return {
+                Название: item.GeoObject.metaDataProperty.GeocoderMetaData.text.replace('Казахстан, Алматы, ', '').replace('Казахстан, город Алматы, ', ''),
+                Код: "0",
+                lng: parseFloat(pos[0]),
+                lat: parseFloat(pos[1])
+              };
+            });
 
             // Match with local streets.json
             const enhancedSuggestions = suggestions.map((s) => {
@@ -234,68 +270,63 @@ const NewInstallation: React.FC = () => {
     }
   };
 
-  const selectStreet = (street: Street) => {
+  const selectStreet = (street: Street & {lat?: number, lng?: number}) => {
     setAddress(street.Название);
     setSelectedStreet(street);
     setManualStreetCode(street.Код && street.Код !== "0" ? street.Код : '');
     setShowSuggestions(false);
+    
+    if (street.lat && street.lng) {
+      setCurrentCoords({ lat: street.lat, lng: street.lng });
+      setMapState({ center: [street.lat, street.lng], zoom: 17 });
+    }
   };
 
-  const handleCreateAddress = async () => {
-    setLoading(true);
+  const geocodeByCoords = async (lat: number, lng: number) => {
     try {
-      const { lng, lat } = newAddressData;
-      const payload = {
-        ...newAddressData,
-        lng: lng || 0,
-        lat: lat || 0,
-        coordinates: `SRID=4326;POINT (${lng || 0} ${lat || 0})`
-      };
-      const res = await api.post('/api/v1/address/', payload);
-      const createdAddress = res.data;
+      const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
+      const response = await fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&format=json&geocode=${lng},${lat}&lang=ru_RU&results=1`);
+      const data = await response.json();
+      const geoObject = data.response.GeoObjectCollection.featureMember[0]?.GeoObject;
       
-      // Auto-select created address for the device
-      setDeviceAddress(createdAddress.id);
-      setAddress(`${payload.street}, ${payload.house}`);
-      setIsAddressModalOpen(false);
-      alert('Адрес успешно создан и привязан!');
-    } catch (err: any) {
-      console.error('Failed to create address', err);
-      let errorMsg = 'Ошибка при создании адреса';
-      if (err.response?.data) {
-        errorMsg += ': ' + JSON.stringify(err.response.data);
-      } else {
-        errorMsg += ': ' + err.message;
+      if (geoObject) {
+        const meta = geoObject.metaDataProperty.GeocoderMetaData;
+        const components = meta.Address.Components;
+        
+        // Find street and house
+        const streetComp = components.find((c: any) => c.kind === 'street');
+        const houseComp = components.find((c: any) => c.kind === 'house');
+        
+        if (streetComp) {
+          const sName = streetComp.name;
+          setAddress(sName);
+          
+          // Match with local streets.json for code
+          const localMatch = (streetsData as Street[]).find(local =>
+            local.Название.toLowerCase().includes(sName.toLowerCase()) ||
+            sName.toLowerCase().includes(local.Название.toLowerCase())
+          );
+          if (localMatch) {
+            setManualStreetCode(localMatch.Код);
+            setSelectedStreet(localMatch);
+          }
+        }
+        
+        if (houseComp) {
+          setHouseNumber(houseComp.name);
+        }
       }
-      alert(errorMsg);
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      console.error('Reverse Geocode Error', err);
     }
   };
 
-  const handleGeolocation = () => {
-    if (navigator.geolocation) {
-      setLoading(true);
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setLoading(false);
-          const { latitude, longitude } = position.coords;
-          setAddress(`Lat: ${latitude}, Long: ${longitude}`);
-          setNewAddressData(prev => ({
-            ...prev,
-            lat: latitude,
-            lng: longitude
-          }));
-        },
-        (err) => {
-          setLoading(false);
-          console.error(err);
-          alert('Не удалось получить геолокацию');
-        }
-      );
-    } else {
-      alert('Геолокация не поддерживается');
-    }
+  const onMapClick = (e: any) => {
+    const coords = e.get('coords');
+    const [lat, lng] = coords;
+    setCurrentCoords({ lat, lng });
+    setMapState(prev => ({ ...prev, center: [lat, lng] }));
+    geocodeByCoords(lat, lng);
   };
 
   const handleModemSerialChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -329,7 +360,7 @@ const NewInstallation: React.FC = () => {
   const selectDevice = async (device: any) => {
     setModemSerial(device.eui || device.serial_number);
     setDeviceId(device.id);
-    setDeviceAddress(device.address ?? null); // Backend requires device__address
+    setDeviceAddress(null); // Ignore existing device address, user must enter/search for it
     
     if (device.additional_data?.district) {
       setDeviceDistrict(Number(device.additional_data.district));
@@ -391,6 +422,7 @@ const NewInstallation: React.FC = () => {
     }, 100);
   };
 
+  /*
   const openCamera = () => {
     setIsCameraOpen(true);
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
@@ -417,6 +449,7 @@ const NewInstallation: React.FC = () => {
       setIsCameraOpen(false);
     }
   };
+  */
 
   const handleSubmit = async () => {
     setError(null);
@@ -426,10 +459,12 @@ const NewInstallation: React.FC = () => {
     if (portModeId === null) { alert('Выберите режим работы устройства'); return; }
     if (!selectedMeterModelId) { alert('Выберите тип счётчика'); return; }
     if (!meterNumber) { alert('Введите номер счётчика'); return; }
-    if (!address) { alert('Введите адрес'); return; }
-    if (!consumerName) { alert('Введите ФИО потребителя'); return; }
-    if (!consumerPhone) { alert('Введите телефон'); return; }
-    if (!accountId) { alert('Введите лицевой счёт'); return; }
+    if (!address) { alert('Выберите улицу'); return; }
+    if (!houseNumber) { alert('Введите номер дома'); return; }
+    // Consumer info is now optional
+    // if (!consumerName) { alert('Введите ФИО потребителя'); return; }
+    // if (!consumerPhone) { alert('Введите телефон'); return; }
+    // if (!accountId) { alert('Введите лицевой счёт'); return; }
     if (!joinReading) { alert('Введите показания'); return; }
 
     if (resourceType === 'cold' && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
@@ -441,10 +476,40 @@ const NewInstallation: React.FC = () => {
 
     setSubmitting(true);
 
+    let addressId = null;
+    // Создаем отдельный объект адреса (для совместимости с бэкендом)
+    try {
+      const streetName = selectedStreet?.Название || address;
+      const lat = currentCoords.lat;
+      const lng = currentCoords.lng;
+      
+      const newAddressRes = await api.post('/api/v1/address/', {
+          province: 'г. Алматы',
+          locality: 'г. Алматы',
+          area: 'городской акимат Алматы',
+          district: 'Алматы',
+          street: streetName,
+          house: houseNumber,
+          lng: lng,
+          lat: lat,
+          coordinates: `SRID=4326;POINT (${lng} ${lat})`
+        });
+      addressId = newAddressRes.data.id;
+      setDeviceAddress(addressId);
+    } catch (err) {
+      console.error('Address creation failed:', err);
+    }
+
+    // Создаем счетчик сразу с адресными полями (street, house, address_code)
+    // Также передаем device__address для совместимости
+
     try {
       const selectedMode = portModes.find(m => m.id === portModeId);
       const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
 
+      const streetName = selectedStreet?.Название || address;
+      const streetCode = manualStreetCode || selectedStreet?.Код;
+      
       const payload: any = {
         serial_number: meterNumber || "",
         description: description || "",
@@ -453,15 +518,23 @@ const NewInstallation: React.FC = () => {
         join_reading: Number(joinReading),
         is_active: true,
         client_sector: clientSector,
+        // Адресные поля прямо для счетчика (чтобы каждый счетчик хранил свой адрес)
+        street: streetName,
+        house: houseNumber,
+        address_code: streetCode && streetCode !== "0" ? streetCode : null,
         additional_data: (() => {
+          const data: any = {};
           if (resourceType === 'cold') {
             const streetId = manualStreetCode || selectedStreet?.Код;
-            return {
-              ...(streetId && streetId !== "0" ? { almaty_su_street_id: streetId } : {}),
-              district: deviceDistrict || 2
-            };
+            if (streetId && streetId !== "0") {
+              data.almaty_su_street_id = streetId;
+            }
+            data.district = deviceDistrict || 2;
           }
-          return {};
+          // Добавляем координаты в additional_data, если нужно
+          data.lat = currentCoords.lat;
+          data.lng = currentCoords.lng;
+          return data;
         })(),
         consumer: consumerName || "",
         apartment: apartment || "",
@@ -472,30 +545,56 @@ const NewInstallation: React.FC = () => {
         object_type: Number(objectType) || null,
         installation_place: Number(installationPlace) || null,
         device: deviceId,
-        device__address: deviceAddress, // Required by backend views.py line 574
         resource_type: resourceType === 'cold' ? 1 : 2,
         node: node,
       };
+
+      if (addressId) {
+        payload.device__address = addressId;
+      }
 
       console.log('Sending payload:', JSON.stringify(payload, null, 2));
 
       // Create Meter
       await api.post(endpoints.meter, payload);
-      alert('Установка успешно создана!');
 
       // Save to History
       const historyItem = {
         timestamp: new Date().toISOString(),
         address,
+        houseNumber,
         meterNumber,
         modemSerial,
-        status: 'success'
+        status: 'success',
+        // Include full data for templates
+        ...payload,
+        consumerName,
+        consumerPhone,
+        accountId,
+        joinReading,
+        description,
+        port,
+        apartment
       };
       const existingHistory = JSON.parse(localStorage.getItem('installation_history') || '[]');
       existingHistory.unshift(historyItem);
       localStorage.setItem('installation_history', JSON.stringify(existingHistory));
 
-      window.location.reload();
+      // window.location.reload(); // Removed reload as per user request to stay in system
+      
+      // Reset form instead of reload
+      setModemSerial('');
+      setDeviceId(null);
+      setDeviceAddress(null);
+      setMeterNumber('');
+      setAddress('');
+      setHouseNumber('');
+      setConsumerName('');
+      setConsumerPhone('+7(7');
+      setAccountId('');
+      setJoinReading('');
+      setPhotos([]);
+      alert('Установка успешно создана!');
 
     } catch (err: any) {
       console.error('Submission error:', err);
@@ -589,7 +688,12 @@ const NewInstallation: React.FC = () => {
           {isScanning && (
             <div className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center p-4">
               <div id="reader" className="w-full max-w-sm bg-white rounded-xl overflow-hidden"></div>
-              <button onClick={() => { setIsScanning(false); window.location.reload(); }} className="mt-6 px-6 py-3 bg-white text-red-600 rounded-full font-bold">Закрыть</button>
+              <button 
+                onClick={() => setIsScanning(false)} 
+                className="mt-6 px-6 py-3 bg-white text-red-600 rounded-full font-bold"
+              >
+                Закрыть
+              </button>
             </div>
           )}
         </section>
@@ -657,19 +761,46 @@ const NewInstallation: React.FC = () => {
           );
         })()}
 
-        {/* Meter Model Selection (API data) */}
-        <section className="space-y-2">
+        {/* Meter Model Selection (Searchable) */}
+        <section className="space-y-2 relative">
           <label className="text-sm font-semibold text-gray-700">Тип счётчика <span className="text-red-500">*</span></label>
           <div className="relative">
-            <select
-              value={selectedMeterModelId}
-              onChange={(e) => setSelectedMeterModelId(e.target.value)}
-              className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
-            >
-              <option value="">Выберите модель...</option>
-              {meterModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-            <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+            <input
+              type="text"
+              value={meterSearchTerm}
+              onChange={(e) => {
+                setMeterSearchTerm(e.target.value);
+                setShowMeterSuggestions(true);
+              }}
+              onFocus={() => setShowMeterSuggestions(true)}
+              placeholder="Поиск типа счётчика (напр. СХВ-15)..."
+              className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none pr-10"
+            />
+            <Search className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+            
+            {showMeterSuggestions && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-30 max-h-60 overflow-y-auto">
+                {meterModels
+                  .filter(m => m.name.toLowerCase().includes(meterSearchTerm.toLowerCase()))
+                  .map(m => (
+                    <div
+                      key={m.id}
+                      onClick={() => {
+                        setSelectedMeterModelId(m.id.toString());
+                        setMeterSearchTerm(m.name);
+                        setShowMeterSuggestions(false);
+                      }}
+                      className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0"
+                    >
+                      {m.name}
+                    </div>
+                  ))
+                }
+                {meterModels.filter(m => m.name.toLowerCase().includes(meterSearchTerm.toLowerCase())).length === 0 && (
+                  <div className="p-3 text-gray-500 text-center">Ничего не найдено</div>
+                )}
+              </div>
+            )}
           </div>
         </section>
 
@@ -685,133 +816,98 @@ const NewInstallation: React.FC = () => {
           />
         </section>
 
-        {/* Address */}
+        {/* Address Selection (Searchable) */}
         <section className="space-y-2 relative">
-          <label className="text-sm font-semibold text-gray-700">Адрес установки <span className="text-red-500">*</span></label>
+          <label className="text-sm font-semibold text-gray-700">Улица <span className="text-red-500">*</span></label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input
                 type="text"
                 value={address}
                 onChange={handleAddressChange}
-                className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
-                placeholder="Поиск улицы..."
+                placeholder="Начните вводить название улицы..."
+                className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none pr-10"
               />
-              {showSuggestions && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 max-h-60 overflow-y-auto">
-                  {suggestedStreets.map((s, i) => (
-                    <div key={i} onClick={() => selectStreet(s)} className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0">{s. Название}</div>
+              <Search className="absolute right-4 top-4 text-gray-400" size={20} />
+              <p className="text-[10px] text-gray-400 mt-1 ml-1">Поиск по Яндекс Картам (только Алматы)</p>
+              {showSuggestions && suggestedStreets.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-30 max-h-60 overflow-y-auto">
+                  {suggestedStreets.map((s, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => selectStreet(s)}
+                      className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 flex flex-col"
+                    >
+                      <span className="font-medium">{s.Название}</span>
+                      {s.Код !== "0" && <span className="text-xs text-blue-600">Код: {s.Код}</span>}
+                    </div>
                   ))}
                 </div>
               )}
             </div>
-            <button 
-              onClick={() => setIsAddressModalOpen(true)}
-              className="bg-blue-600 text-white p-4 rounded-xl active:scale-95 transition-transform flex items-center justify-center"
-              title="Создать новый адрес"
-            >
-              <span className="text-2xl leading-none">+</span>
-            </button>
           </div>
-
-          {resourceType === 'cold' && (
-            <div className="space-y-2">
-              {!selectedStreet?.Код || selectedStreet.Код === "0" ? (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
-                  <p className="text-amber-700 text-xs font-medium mb-2">
-                    ⚠️ Улица не найдена в базе Алматы Су. Введите код вручную:
-                  </p>
-                  <input
-                    type="text"
-                    value={manualStreetCode}
-                    onChange={(e) => setManualStreetCode(e.target.value)}
-                    className="w-full bg-white border border-amber-300 rounded-lg p-2 text-sm focus:ring-1 focus:ring-amber-500 outline-none"
-                    placeholder="Код улицы (например: 144)"
-                  />
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-green-600 font-medium px-1">
-                  <Check size={14} />
-                  <span>Код улицы: {manualStreetCode || selectedStreet.Код}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          <button onClick={handleGeolocation} disabled={loading} className="w-full flex items-center justify-center space-x-2 py-3 bg-blue-50 text-blue-700 font-medium rounded-xl border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all">
-            {loading ? <Loader2 className="animate-spin" /> : <MapPin size={18} />}
-            <span>Определить по геолокации</span>
-          </button>
         </section>
 
-        {/* Address Creation Modal */}
-        {isAddressModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200">
-              <div className="p-6 space-y-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-xl font-bold text-gray-900">Новый адрес</h3>
-                  <button onClick={() => setIsAddressModalOpen(false)} className="text-gray-400 hover:text-gray-600 text-2xl">✕</button>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="col-span-2">
-                    <label className="text-xs text-gray-500 uppercase">Улица <span className="text-red-500">*</span></label>
-                    <input
-                      value={newAddressData.street}
-                      onChange={(e) => setNewAddressData({...newAddressData, street: e.target.value})}
-                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
-                      placeholder="Название улицы"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 uppercase">Дом <span className="text-red-500">*</span></label>
-                    <input
-                      value={newAddressData.house}
-                      onChange={(e) => setNewAddressData({...newAddressData, house: e.target.value})}
-                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
-                      placeholder="Номер"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 uppercase">Район</label>
-                    <input
-                      value={newAddressData.district}
-                      onChange={(e) => setNewAddressData({...newAddressData, district: e.target.value})}
-                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
-                      placeholder="Район"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 uppercase">Населенный пункт</label>
-                    <input
-                      value={newAddressData.locality}
-                      onChange={(e) => setNewAddressData({...newAddressData, locality: e.target.value})}
-                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 uppercase">Область</label>
-                    <input
-                      value={newAddressData.province}
-                      onChange={(e) => setNewAddressData({...newAddressData, province: e.target.value})}
-                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
-                    />
-                  </div>
-                </div>
+        {/* House and Flat */}
+        <div className="grid grid-cols-2 gap-4">
+          <section className="space-y-2">
+            <label className="text-sm font-semibold text-gray-700">Дом <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              value={houseNumber}
+              onChange={(e) => setHouseNumber(e.target.value)}
+              placeholder="Дом"
+              className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </section>
+          <section className="space-y-2">
+            <label className="text-sm font-semibold text-gray-700">Квартира</label>
+            <input
+              type="text"
+              value={apartment}
+              onChange={(e) => setApartment(e.target.value)}
+              placeholder="Кв."
+              className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </section>
+        </div>
 
-                <button
-                  onClick={handleCreateAddress}
-                  disabled={loading || !newAddressData.street || !newAddressData.house}
-                  className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 active:scale-95 transition-all disabled:bg-gray-300 flex items-center justify-center gap-2"
-                >
-                  {loading ? <Loader2 className="animate-spin" /> : <Check size={20} />}
-                  Создать и привязать
-                </button>
-              </div>
-            </div>
+        {/* Map Selection */}
+        <section className="space-y-2">
+          <label className="text-sm font-semibold text-gray-700">Расположение на карте <span className="text-gray-400 text-xs font-normal">(можно кликнуть для выбора)</span></label>
+          <div className="rounded-xl overflow-hidden border border-gray-300 h-64 relative">
+            <YMaps query={{ apikey: 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b', lang: 'ru_RU' }}>
+              <Map 
+                state={mapState} 
+                width="100%" 
+                height="100%" 
+                onClick={onMapClick}
+                onBoundsChange={(e: any) => {
+                  // Optional: update zoom if user scrolls
+                  const newZoom = e.get('target').getZoom();
+                  if (newZoom !== mapState.zoom) {
+                    setMapState(prev => ({ ...prev, zoom: newZoom }));
+                  }
+                }}
+              >
+                <Placemark 
+                  geometry={[currentCoords.lat, currentCoords.lng]} 
+                  options={{ draggable: true }}
+                  onDragEnd={(e: any) => {
+                    const coords = e.get('target').geometry.getCoordinates();
+                    const [lat, lng] = coords;
+                    setCurrentCoords({ lat, lng });
+                    geocodeByCoords(lat, lng);
+                  }}
+                />
+              </Map>
+            </YMaps>
           </div>
-        )}
+          <div className="flex justify-between text-[10px] text-gray-500 px-1">
+            <span>Широта: {currentCoords.lat.toFixed(6)}</span>
+            <span>Долгота: {currentCoords.lng.toFixed(6)}</span>
+          </div>
+        </section>
 
         {/* Installation Place & Object Type */}
         <div className="grid grid-cols-2 gap-4">
@@ -846,41 +942,7 @@ const NewInstallation: React.FC = () => {
           </section>
         </div>
 
-        {/* Apartment */}
-        <section className="space-y-2">
-          <label className="text-sm font-semibold text-gray-700">Квартира</label>
-          <input
-            type="text"
-            value={apartment}
-            onChange={(e) => setApartment(e.target.value)}
-            className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </section>
-
-        {/* Client Sector Selection */}
-        <section className="space-y-2">
-          <label className="text-sm font-semibold text-gray-700">Клиентский сектор <span className="text-red-500">*</span></label>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              { id: 'private', label: 'Частный' },
-              { id: 'legal', label: 'Юр. лицо' },
-              { id: 'multi_apartment', label: 'Многокв.' },
-              { id: 'physical', label: 'Физ. лицо' }
-            ].map((sector) => (
-              <button
-                key={sector.id}
-                onClick={() => setClientSector(sector.id as any)}
-                className={`py-3 px-2 rounded-xl text-xs font-bold border transition-all ${
-                  clientSector === sector.id
-                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
-                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                }`}
-              >
-                {sector.label}
-              </button>
-            ))}
-          </div>
-        </section>
+        {/* Client Sector removed as it is now default legal and hidden */}
 
         {/* IPU Class (District) for Almaty Su */}
         {resourceType === 'cold' && (
@@ -965,32 +1027,8 @@ const NewInstallation: React.FC = () => {
           />
         </section>
 
-        {/* Photos */}
-        <section className="space-y-3">
-          <label className="text-sm font-semibold text-gray-700">Фото подтверждение</label>
-          <div className="grid grid-cols-3 gap-3">
-            {photos.map((p, i) => (
-              <div key={i} className="aspect-square rounded-xl overflow-hidden border border-gray-200 shadow-sm">
-                <img src={p} className="w-full h-full object-cover" alt="installation" />
-              </div>
-            ))}
-            {photos.length < 3 && (
-              <button onClick={openCamera} className="aspect-square bg-gray-100 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-500 hover:bg-gray-200 transition">
-                <Camera size={24} />
-                <span className="text-xs font-medium mt-1">Добавить</span>
-              </button>
-            )}
-          </div>
-          {isCameraOpen && (
-            <div className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center">
-              <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-              <div className="absolute bottom-10 flex space-x-6">
-                <button onClick={() => setIsCameraOpen(false)} className="w-16 h-16 rounded-full bg-gray-800 text-white flex items-center justify-center">✕</button>
-                <button onClick={takePhoto} className="w-20 h-20 rounded-full border-4 border-white bg-red-600 shadow-lg"></button>
-              </div>
-            </div>
-          )}
-        </section>
+      {/* Photos (Removed per user request) */}
+      {/* <section className="space-y-3"> ... </section> */}
 
       </main>
 

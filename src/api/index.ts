@@ -46,6 +46,7 @@ export const endpoints = {
     deviceMode: '/api/v1/device/mode/',
     installationPlace: '/api/v1/installation_place/',
     objectType: '/api/v1/object_type/',
+    address: '/api/v1/address/',
 };
 
 export const getPortModes = async (deviceModelId?: number): Promise<PortMode[]> => {
