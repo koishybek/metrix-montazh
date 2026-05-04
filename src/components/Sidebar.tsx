@@ -1,20 +1,16 @@
-import React, { useState } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import React from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { PlusCircle, History, User, LogOut, Menu, X, LayoutDashboard } from 'lucide-react';
+import { PlusCircle, History, User, LogOut } from 'lucide-react';
 
 const Sidebar: React.FC = () => {
   const { logout, user } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const [isOpen, setIsOpen] = useState(false);
-
-  const toggleSidebar = () => setIsOpen(!isOpen);
 
   const navItems = [
-    { path: '/new-installation', label: 'Новая установка', icon: <PlusCircle size={20} /> },
-    { path: '/history', label: 'История / Черновики', icon: <History size={20} /> },
-    { path: '/profile', label: 'Профиль монтажника', icon: <User size={20} /> },
+    { path: '/new-installation', label: 'Установка', icon: <PlusCircle size={20} /> },
+    { path: '/history', label: 'История', icon: <History size={20} /> },
+    { path: '/profile', label: 'Профиль', icon: <User size={20} /> },
   ];
 
   const handleLogout = () => {
@@ -24,27 +20,32 @@ const Sidebar: React.FC = () => {
 
   return (
     <>
-      {/* Mobile Header */}
-      <div className="md:hidden bg-white shadow-sm p-4 flex justify-between items-center sticky top-0 z-20">
-        <h1 className="font-bold text-gray-800 text-lg">Metrix Installer</h1>
-        <button onClick={toggleSidebar} className="p-2 hover:bg-gray-100 rounded-lg">
-          {isOpen ? <X size={24} /> : <Menu size={24} />}
+      {/* Mobile Bottom Navigation */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50 flex justify-around items-center h-16 px-2 shadow-lg">
+        {navItems.map((item) => (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            className={({ isActive }) => `
+              flex flex-col items-center justify-center flex-1 h-full space-y-1 transition-colors
+              ${isActive ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'}
+            `}
+          >
+            {item.icon}
+            <span className="text-[10px] font-bold uppercase tracking-tighter">{item.label}</span>
+          </NavLink>
+        ))}
+        <button
+          onClick={handleLogout}
+          className="flex flex-col items-center justify-center flex-1 h-full space-y-1 text-red-500"
+        >
+          <LogOut size={20} />
+          <span className="text-[10px] font-bold uppercase tracking-tighter">Выйти</span>
         </button>
-      </div>
+      </nav>
 
-      {/* Overlay */}
-      {isOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
-          onClick={() => setIsOpen(false)}
-        />
-      )}
-
-      {/* Sidebar Content */}
-      <aside className={`
-        fixed md:sticky top-0 left-0 h-screen w-64 bg-white border-r border-gray-200 z-40 transform transition-transform duration-300 ease-in-out
-        ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-      `}>
+      {/* Desktop Sidebar (unchanged logic, added hidden md:block) */}
+      <aside className="hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white border-r border-gray-200 z-40 flex-col transform transition-transform duration-300 ease-in-out translate-x-0">
         <div className="flex flex-col h-full">
           {/* Logo */}
           <div className="p-6 border-b border-gray-100 flex items-center space-x-3">
@@ -64,11 +65,10 @@ const Sidebar: React.FC = () => {
               <NavLink
                 key={item.path}
                 to={item.path}
-                onClick={() => setIsOpen(false)}
                 className={({ isActive }) => `
                   flex items-center space-x-3 px-3 py-3 rounded-xl transition-all duration-200 font-medium
-                  ${isActive 
-                    ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' 
+                  ${isActive
+                    ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100'
                     : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}
                 `}
               >
@@ -89,8 +89,8 @@ const Sidebar: React.FC = () => {
                 <p className="text-xs text-green-600 font-medium">В сети</p>
               </div>
             </div>
-            
-            <button 
+
+            <button
               onClick={handleLogout}
               className="w-full flex items-center justify-center space-x-2 p-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors font-medium"
             >

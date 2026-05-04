@@ -1,9 +1,10 @@
 import axios from 'axios';
+import type { PortMode, MeterModel } from '../types';
 
-const API_URL = 'https://sm.iot-exp.kz';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://sm.iot-exp.kz';
 
 const api = axios.create({
-    baseURL: API_URL,
+    baseURL: API_BASE_URL,
     headers: {
         'Content-Type': 'application/json',
     },
@@ -40,10 +41,35 @@ api.interceptors.response.use(
 export const endpoints = {
     auth: '/api-token-auth/',
     meterModels: '/api/v1/meter/model/',
-    installation: '/api/v1/installation/', // Assuming this is the correct endpoint for the combined payload
-    // If the above doesn't work, we might need these:
     device: '/api/v1/device/',
     meter: '/api/v1/meter/',
+    deviceMode: '/api/v1/device/mode/',
+    installationPlace: '/api/v1/installation_place/',
+    objectType: '/api/v1/object_type/',
+    address: '/api/v1/address/',
+};
+
+export const getPortModes = async (deviceModelId?: number): Promise<PortMode[]> => {
+    const url = deviceModelId 
+        ? `${endpoints.deviceMode}?device_model=${deviceModelId}&page_size=100`
+        : `${endpoints.deviceMode}?page_size=100`;
+    const res = await api.get(url);
+    return res.data.results;
+};
+
+export const getMeterModels = async (): Promise<MeterModel[]> => {
+    const res = await api.get(`${endpoints.meterModels}?page_size=300`);
+    return res.data.results;
+};
+
+export const getInstallationPlaces = async (): Promise<any[]> => {
+    const res = await api.get(`${endpoints.installationPlace}?page_size=200`);
+    return res.data.results;
+};
+
+export const getObjectTypes = async (): Promise<any[]> => {
+    const res = await api.get(`${endpoints.objectType}?page_size=300`);
+    return res.data.results;
 };
 
 export default api;
