@@ -863,36 +863,6 @@ const NewInstallation: React.FC = () => {
           </section>
         )}
 
-        {/* Manual Street Code for Almaty Su */}
-        {resourceType === 'cold' && (
-          <section className="space-y-2">
-            <label className="text-sm font-semibold text-gray-700">Код улицы в базе Алматы Су</label>
-            <input
-              type="text"
-              value={manualStreetCode}
-              onChange={(e) => setManualStreetCode(e.target.value)}
-              placeholder="Код улицы (автоматически или вручную)"
-              className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
-            />
-            <p className="text-[10px] text-gray-400 mt-1 ml-1">Если код не найден автоматически, введите его вручную</p>
-          </section>
-        )}
-
-        {/* Manual Street Code for Almaty Su */}
-        {resourceType === 'cold' && (
-          <section className="space-y-2">
-            <label className="text-sm font-semibold text-gray-700">Код улицы в базе Алматы Су</label>
-            <input
-              type="text"
-              value={manualStreetCode}
-              onChange={(e) => setManualStreetCode(e.target.value)}
-              placeholder="Код улицы (автоматически или вручную)"
-              className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
-            />
-            <p className="text-[10px] text-gray-400 mt-1 ml-1">Если код не найден автоматически, введите его вручную</p>
-          </section>
-        )}
-
         {/* House and Flat */}
         <div className="grid grid-cols-2 gap-4">
           <section className="space-y-2">
