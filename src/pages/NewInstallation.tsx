@@ -374,26 +374,50 @@ const NewInstallation: React.FC = () => {
     setDeviceTypeName('');
     setIsPortLocked(false);
 
-    if (value.length >= 8) {
+    if (value.length >= 3) {
       const timeoutId = setTimeout(async () => {
         try {
           const res = await api.get(`/api/v1/device/?ordering=-sent_date&page=1&page_size=10&search=${value}`);
           if (res.data && Array.isArray(res.data.results)) {
-            setSuggestedDevices(res.data.results);
+            // Sort results: matches at the end of the string go first
+            const sortedResults = [...res.data.results].sort((a: any, b: any) => {
+              const aVal = (a.eui || a.serial_number || '').toString();
+              const bVal = (b.eui || b.serial_number || '').toString();
+              const aEnds = aVal.endsWith(value);
+              const bEnds = bVal.endsWith(value);
+              if (aEnds && !bEnds) return -1;
+              if (!aEnds && bEnds) return 1;
+              return 0;
+            });
+
+            setSuggestedDevices(sortedResults);
             setShowDeviceSuggestions(true);
             
-            // Auto-select if exact match
-            const exactMatch = res.data.results.find((d: any) => 
+            // Auto-select logic:
+            // 1. Exact match (any length)
+            const exactMatch = sortedResults.find((d: any) => 
               d.eui === value || d.serial_number === value
             );
+            
             if (exactMatch) {
               selectDevice(exactMatch);
+            } 
+            // 2. Unique match by any part of the string (usually last digits)
+            else {
+              const matches = sortedResults.filter((d: any) => {
+                const s = (d.eui || d.serial_number || '').toString().toLowerCase();
+                return s.includes(value.toLowerCase());
+              });
+
+              if (matches.length === 1) {
+                selectDevice(matches[0]);
+              }
             }
           }
         } catch (err) {
           console.error('Device search failed', err);
         }
-      }, 500);
+      }, 300); // Faster debounce (300ms instead of 500ms)
       return () => clearTimeout(timeoutId);
     } else {
       setSuggestedDevices([]);
