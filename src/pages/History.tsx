@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
-import { FileText, Clock, CheckCircle, ArrowRight, Trash2, Search, Copy } from 'lucide-react';
+import { FileText, Clock, CheckCircle, ArrowRight, Trash2, Search, Copy, Loader2 } from 'lucide-react';
 
 const History: React.FC = () => {
   const navigate = useNavigate();
   const [drafts, setDrafts] = useState<any[]>([]);
+  const [outbox, setOutbox] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -13,6 +14,10 @@ const History: React.FC = () => {
     // Load drafts from localStorage
     const savedDrafts = JSON.parse(localStorage.getItem('installation_drafts') || '[]');
     setDrafts(savedDrafts);
+
+    // Load outbox
+    const savedOutbox = JSON.parse(localStorage.getItem('installation_outbox') || '[]');
+    setOutbox(savedOutbox);
 
     // Load history
     const savedHistory = JSON.parse(localStorage.getItem('installation_history') || '[]');
@@ -34,10 +39,12 @@ const History: React.FC = () => {
   };
 
   const deleteDraft = (index: number) => {
-    const newDrafts = [...drafts];
-    newDrafts.splice(index, 1);
-    setDrafts(newDrafts);
-    localStorage.setItem('installation_drafts', JSON.stringify(newDrafts));
+    if (window.confirm('Вы уверены, что хотите удалить этот черновик? Это действие нельзя отменить.')) {
+      const newDrafts = [...drafts];
+      newDrafts.splice(index, 1);
+      setDrafts(newDrafts);
+      localStorage.setItem('installation_drafts', JSON.stringify(newDrafts));
+    }
   };
 
   const filteredHistory = history.filter(item => 
@@ -128,6 +135,37 @@ const History: React.FC = () => {
           </div>
         )}
       </section>
+
+      {/* Outbox Section */}
+      {outbox.length > 0 && (
+        <section>
+          <div className="flex items-center space-x-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+              <Clock size={18} className="animate-pulse" />
+            </div>
+            <h2 className="text-lg font-bold text-gray-800">Ожидают синхронизации</h2>
+            <span className="bg-blue-600 text-white px-2 py-0.5 rounded-full text-xs font-bold">{outbox.length}</span>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {outbox.map((item, i) => (
+              <div key={i} className="bg-white border-2 border-blue-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 bg-blue-500 text-white text-[10px] px-2 py-1 font-bold uppercase tracking-wider">
+                  В очереди
+                </div>
+                <div className="mb-3">
+                  <h3 className="font-bold text-gray-900">{item.address || 'Без адреса'}</h3>
+                  <p className="text-xs text-gray-500">Дом: {item.house}, № {item.serial_number}</p>
+                </div>
+                <div className="flex items-center text-blue-600 text-xs font-medium">
+                  <Loader2 size={14} className="animate-spin mr-1" />
+                  Отправится автоматически при появлении сети
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* History Section */}
       <section>

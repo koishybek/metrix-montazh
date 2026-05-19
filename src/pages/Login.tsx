@@ -32,6 +32,23 @@ const Login: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Login failed:', err);
+      
+      // Offline Auth Check
+      if (!navigator.onLine || err.message === 'Network Error') {
+        const savedUser = localStorage.getItem('user');
+        const token = localStorage.getItem('token');
+        if (savedUser && token) {
+          const userObj = JSON.parse(savedUser);
+          if (userObj.username === username) {
+             // In real offline, we can't verify password, but for PWA installer 
+             // we allow entry if this user was previously logged in
+             login(userObj, token);
+             navigate('/new-installation');
+             return;
+          }
+        }
+      }
+
       const errorMessage = err.response?.data?.non_field_errors?.[0] || 'Ошибка авторизации: Неверный логин или пароль';
       setError(errorMessage);
     }

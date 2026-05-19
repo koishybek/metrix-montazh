@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { format } from 'date-fns';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { QrCode, Check, ChevronDown, Loader2, Search } from 'lucide-react';
+import { QrCode, Check, ChevronDown, Loader2, Search, FileText } from 'lucide-react';
 import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
 import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes } from '../api';
 import streetsData from '../assets/streets.json';
@@ -135,9 +135,33 @@ const NewInstallation: React.FC = () => {
       setObjectType(draft.object_type?.toString() || '');
       setApartment(draft.apartment || '');
       setClientSector(draft.client_sector || 'legal');
+      setManualStreetCode(draft.manualStreetCode || '');
+      if (draft.selectedStreet) setSelectedStreet(draft.selectedStreet);
+      if (draft.currentCoords) setCurrentCoords(draft.currentCoords);
+      if (draft.deviceDistrict) setDeviceDistrict(draft.deviceDistrict);
       
       if (draft.modemSerial) {
         setModemSerial(draft.modemSerial);
+        // Automatically try to select the device if we have enough info
+        if (draft.device) {
+          // If the draft has a device object or ID, we can pre-select it
+          // Let's trigger a search and auto-select the first exact match
+          api.get(`/api/v1/device/?search=${draft.modemSerial}`)
+            .then(res => {
+              if (res.data?.results?.length > 0) {
+                const exactMatch = res.data.results.find((d: any) => 
+                  (d.eui === draft.modemSerial || d.serial_number === draft.modemSerial) &&
+                  (draft.device === d.id)
+                );
+                if (exactMatch) {
+                  selectDevice(exactMatch);
+                } else if (res.data.results.length === 1) {
+                  selectDevice(res.data.results[0]);
+                }
+              }
+            })
+            .catch(err => console.error('Auto-select device failed', err));
+        }
       }
     }
   }, [location]);
@@ -212,12 +236,24 @@ const NewInstallation: React.FC = () => {
       modemSerial,
       meterNumber,
       address,
+      houseNumber,
       consumerName,
       consumerPhone,
       accountId,
       joinReading,
       apartment,
-      // Add other fields
+      description,
+      port,
+      device_mode: portModeId,
+      type: selectedMeterModelId,
+      installation_place: installationPlace,
+      object_type: objectType,
+      device: deviceId,
+      client_sector: clientSector,
+      manualStreetCode,
+      selectedStreet,
+      currentCoords,
+      deviceDistrict
     };
 
     const existingDrafts = JSON.parse(localStorage.getItem('installation_drafts') || '[]');
@@ -338,13 +374,21 @@ const NewInstallation: React.FC = () => {
     setDeviceTypeName('');
     setIsPortLocked(false);
 
-    if (value.length > 3) {
+    if (value.length >= 8) {
       const timeoutId = setTimeout(async () => {
         try {
           const res = await api.get(`/api/v1/device/?ordering=-sent_date&page=1&page_size=10&search=${value}`);
           if (res.data && Array.isArray(res.data.results)) {
             setSuggestedDevices(res.data.results);
             setShowDeviceSuggestions(true);
+            
+            // Auto-select if exact match
+            const exactMatch = res.data.results.find((d: any) => 
+              d.eui === value || d.serial_number === value
+            );
+            if (exactMatch) {
+              selectDevice(exactMatch);
+            }
           }
         } catch (err) {
           console.error('Device search failed', err);
@@ -451,20 +495,31 @@ const NewInstallation: React.FC = () => {
   };
   */
 
+  const resetForm = () => {
+    setModemSerial('');
+    setDeviceId(null);
+    setDeviceAddress(null);
+    setMeterNumber('');
+    setAddress('');
+    setHouseNumber('');
+    setConsumerName('');
+    setConsumerPhone('+7(7');
+    setAccountId('');
+    setJoinReading('');
+    setPhotos([]);
+    setManualStreetCode('');
+  };
+
   const handleSubmit = async () => {
     setError(null);
     if (!resourceType) { alert('Выберите тип ресурса'); return; }
     if (!modemSerial) { alert('Введите серийный номер модема'); return; }
-    if (!deviceId) { alert('Сначала выберите устройство из списка поиска'); return; } // Enforce selection
+    if (!deviceId) { alert('Сначала выберите устройство из списка поиска'); return; } 
     if (portModeId === null) { alert('Выберите режим работы устройства'); return; }
     if (!selectedMeterModelId) { alert('Выберите тип счётчика'); return; }
     if (!meterNumber) { alert('Введите номер счётчика'); return; }
     if (!address) { alert('Выберите улицу'); return; }
     if (!houseNumber) { alert('Введите номер дома'); return; }
-    // Consumer info is now optional
-    // if (!consumerName) { alert('Введите ФИО потребителя'); return; }
-    // if (!consumerPhone) { alert('Введите телефон'); return; }
-    // if (!accountId) { alert('Введите лицевой счёт'); return; }
     if (!joinReading) { alert('Введите показания'); return; }
 
     if (resourceType === 'cold' && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
@@ -474,89 +529,106 @@ const NewInstallation: React.FC = () => {
       if (!confirmed) return;
     }
 
+    // Prepare Payload
+    const selectedMode = portModes.find(m => m.id === portModeId);
+    const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
+    const streetName = selectedStreet?.Название || address;
+    const streetCode = manualStreetCode || selectedStreet?.Код;
+    const lat = currentCoords.lat;
+    const lng = currentCoords.lng;
+
+    const meterPayload: any = {
+      serial_number: meterNumber || "",
+      description: description || "",
+      ...(needsPort ? { port: Number(port) } : {}),
+      join_date: joinDate,
+      join_reading: Number(joinReading),
+      is_active: true,
+      client_sector: clientSector,
+      street: streetName,
+      house: houseNumber,
+      address_code: streetCode && streetCode !== "0" ? streetCode : null,
+      additional_data: (() => {
+        const data: any = {};
+        if (resourceType === 'cold') {
+          const streetId = manualStreetCode || selectedStreet?.Код;
+          if (streetId && streetId !== "0") {
+            data.almaty_su_street_id = streetId;
+          }
+          data.district = deviceDistrict || 2;
+        }
+        data.lat = lat;
+        data.lng = lng;
+        return data;
+      })(),
+      consumer: consumerName || "",
+      apartment: apartment || "",
+      phone: consumerPhone || "",
+      account_id: accountId || "",
+      device_mode: portModeId,
+      type: Number(selectedMeterModelId) || null,
+      object_type: Number(objectType) || null,
+      installation_place: Number(installationPlace) || null,
+      device: deviceId,
+      resource_type: resourceType === 'cold' ? 1 : 2,
+      node: node,
+    };
+
+    const addressPayload = {
+      province: 'г. Алматы',
+      locality: 'г. Алматы',
+      area: 'городской акимат Алматы',
+      district: 'Алматы',
+      street: streetName,
+      house: houseNumber,
+      lng: lng,
+      lat: lat,
+      coordinates: `SRID=4326;POINT (${lng} ${lat})`
+    };
+
     setSubmitting(true);
 
-    let addressId = null;
-    // Создаем отдельный объект адреса (для совместимости с бэкендом)
-    try {
-      const streetName = selectedStreet?.Название || address;
-      const lat = currentCoords.lat;
-      const lng = currentCoords.lng;
-      
-      const newAddressRes = await api.post('/api/v1/address/', {
-          province: 'г. Алматы',
-          locality: 'г. Алматы',
-          area: 'городской акимат Алматы',
-          district: 'Алматы',
-          street: streetName,
-          house: houseNumber,
-          lng: lng,
-          lat: lat,
-          coordinates: `SRID=4326;POINT (${lng} ${lat})`
-        });
-      addressId = newAddressRes.data.id;
-      setDeviceAddress(addressId);
-    } catch (err) {
-      console.error('Address creation failed:', err);
-    }
-
-    // Создаем счетчик сразу с адресными полями (street, house, address_code)
-    // Также передаем device__address для совместимости
-
-    try {
-      const selectedMode = portModes.find(m => m.id === portModeId);
-      const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
-
-      const streetName = selectedStreet?.Название || address;
-      const streetCode = manualStreetCode || selectedStreet?.Код;
-      
-      const payload: any = {
-        serial_number: meterNumber || "",
-        description: description || "",
-        ...(needsPort ? { port: Number(port) } : {}),
-        join_date: joinDate,
-        join_reading: Number(joinReading),
-        is_active: true,
-        client_sector: clientSector,
-        // Адресные поля прямо для счетчика (чтобы каждый счетчик хранил свой адрес)
-        street: streetName,
-        house: houseNumber,
-        address_code: streetCode && streetCode !== "0" ? streetCode : null,
-        additional_data: (() => {
-          const data: any = {};
-          if (resourceType === 'cold') {
-            const streetId = manualStreetCode || selectedStreet?.Код;
-            if (streetId && streetId !== "0") {
-              data.almaty_su_street_id = streetId;
-            }
-            data.district = deviceDistrict || 2;
-          }
-          // Добавляем координаты в additional_data, если нужно
-          data.lat = currentCoords.lat;
-          data.lng = currentCoords.lng;
-          return data;
-        })(),
-        consumer: consumerName || "",
-        apartment: apartment || "",
-        phone: consumerPhone || "",
-        account_id: accountId || "",
-        device_mode: portModeId,
-        type: Number(selectedMeterModelId) || null,
-        object_type: Number(objectType) || null,
-        installation_place: Number(installationPlace) || null,
-        device: deviceId,
-        resource_type: resourceType === 'cold' ? 1 : 2,
-        node: node,
+    // Offline Sync Logic
+    if (!navigator.onLine) {
+      const outboxItem = {
+        ...meterPayload,
+        _offlineAddressData: addressPayload,
+        _outboxId: Date.now(),
+        // Extra info for history
+        modemSerial,
+        address
       };
 
-      if (addressId) {
-        payload.device__address = addressId;
+      const outbox = JSON.parse(localStorage.getItem('installation_outbox') || '[]');
+      outbox.push(outboxItem);
+      localStorage.setItem('installation_outbox', JSON.stringify(outbox));
+
+      alert('Оффлайн: Установка сохранена в очередь. Она будет отправлена автоматически при появлении интернета.');
+      resetForm();
+      setSubmitting(false);
+      return;
+    }
+
+    try {
+      // Create Address
+      let addressId = null;
+      try {
+        const newAddressRes = await api.post(endpoints.address, addressPayload);
+        addressId = newAddressRes.data.id;
+        setDeviceAddress(addressId);
+      } catch (err) {
+        console.error('Address creation failed:', err);
       }
 
-      console.log('Sending payload:', JSON.stringify(payload, null, 2));
+      const finalPayload = { ...meterPayload };
+      if (addressId) {
+        finalPayload.device__address = addressId;
+      }
+
+      console.log('Sending payload:', JSON.stringify(finalPayload, null, 2));
 
       // Create Meter
-      await api.post(endpoints.meter, payload);
+      await api.post(endpoints.meter, finalPayload);
 
       // Save to History
       const historyItem = {
@@ -566,8 +638,7 @@ const NewInstallation: React.FC = () => {
         meterNumber,
         modemSerial,
         status: 'success',
-        // Include full data for templates
-        ...payload,
+        ...finalPayload,
         consumerName,
         consumerPhone,
         accountId,
@@ -580,22 +651,8 @@ const NewInstallation: React.FC = () => {
       existingHistory.unshift(historyItem);
       localStorage.setItem('installation_history', JSON.stringify(existingHistory));
 
-      // window.location.reload(); // Removed reload as per user request to stay in system
-      
-      // Reset form instead of reload
-      setModemSerial('');
-      setDeviceId(null);
-      setDeviceAddress(null);
-      setMeterNumber('');
-      setAddress('');
-      setHouseNumber('');
-      setConsumerName('');
-      setConsumerPhone('+7(7');
-      setAccountId('');
-      setJoinReading('');
-      setPhotos([]);
+      resetForm();
       alert('Установка успешно создана!');
-
     } catch (err: any) {
       console.error('Submission error:', err);
       let msg = 'Ошибка при создании установки';
@@ -1049,14 +1106,21 @@ const NewInstallation: React.FC = () => {
 
       {/* Footer / Submit */}
       <footer className="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md shadow-top z-10 border-t border-gray-200 md:bottom-0 mb-16 md:mb-0">
-        <div className="max-w-lg mx-auto">
+        <div className="max-w-lg mx-auto flex gap-3">
+          <button
+            onClick={saveDraft}
+            className="flex-1 py-4 bg-white border-2 border-blue-600 text-blue-600 text-lg font-bold rounded-xl hover:bg-blue-50 transition-all active:scale-95 flex items-center justify-center space-x-2"
+          >
+            <FileText size={24} />
+            <span>В черновик</span>
+          </button>
           <button
             onClick={handleSubmit}
             disabled={submitting}
-            className="w-full py-4 bg-green-600 text-white text-lg font-bold rounded-xl shadow-lg shadow-green-200 hover:transform hover:-translate-y-1 transition-all active:scale-95 disabled:bg-gray-400 disabled:shadow-none flex items-center justify-center space-x-2"
+            className="flex-[2] py-4 bg-green-600 text-white text-lg font-bold rounded-xl shadow-lg shadow-green-200 hover:transform hover:-translate-y-1 transition-all active:scale-95 disabled:bg-gray-400 disabled:shadow-none flex items-center justify-center space-x-2"
           >
             {submitting ? <Loader2 className="animate-spin" /> : <Check size={24} />}
-            <span>{submitting ? 'Отправка...' : 'Создать установку'}</span>
+            <span>{submitting ? 'Отправка...' : 'Создать'}</span>
           </button>
         </div>
       </footer>
