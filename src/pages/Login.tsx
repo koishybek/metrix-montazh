@@ -15,17 +15,12 @@ const Login: React.FC = () => {
     e.preventDefault();
     setError('');
 
-    // Pre-fill valid credentials for testing if empty (optional helper)
-    // if (!username && !password) {
-    //    setUsername('oljas_iot');
-    //    setPassword('oljas_iot_123');
-    //    return; 
-    // }
-
     try {
       const response = await api.post('/api-token-auth/', { username, password });
       if (response.data && response.data.token) {
-        login({ username }, response.data.token);
+        // Use the real Smart Metrix account: store the authenticated username
+        // and the role the backend returns (e.g. "admin"). No baked-in defaults.
+        login({ username, role: response.data.role }, response.data.token);
         navigate('/new-installation');
       } else {
         setError('Не удалось получить токен');

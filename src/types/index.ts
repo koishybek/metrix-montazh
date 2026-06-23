@@ -1,5 +1,6 @@
 export interface User {
   username: string;
+  role?: string; // from POST /api-token-auth/ response, e.g. "admin"
 }
 
 export interface MeterModel {
