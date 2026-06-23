@@ -1,12 +1,17 @@
 import { useEffect } from 'react';
 import api, { endpoints } from '../api';
+import { useAuth } from '../context/AuthContext';
 
 const SyncManager = () => {
+  const { user } = useAuth();
+  const username = user?.username || 'anon';
   useEffect(() => {
+    const outboxKey = `installation_outbox_${username}`;
+    const historyKey = `installation_history_${username}`;
     const syncOutbox = async () => {
       if (!navigator.onLine) return;
 
-      const outbox = JSON.parse(localStorage.getItem('installation_outbox') || '[]');
+      const outbox = JSON.parse(localStorage.getItem(outboxKey) || '[]');
       if (outbox.length === 0) return;
 
       console.log(`[SyncManager] Found ${outbox.length} items to sync`);
@@ -36,18 +41,20 @@ const SyncManager = () => {
           delete payload._offlineAddressData;
           delete payload._outboxId;
 
-          await api.post(endpoints.meter, payload);
-          
-          // 3. Move to history on success
+          const meterRes = await api.post(endpoints.meter, payload);
+
+          // 3. Move to history. Keep the created meter id + upload_status so the
+          // History page can show the real "в разработке" -> "Принято" progression.
           const historyItem = {
             ...payload,
             timestamp: new Date().toISOString(),
-            status: 'success',
+            meterId: meterRes.data?.id ?? null,
+            upload_status: meterRes.data?.upload_status ?? null,
             synced: true
           };
-          const existingHistory = JSON.parse(localStorage.getItem('installation_history') || '[]');
+          const existingHistory = JSON.parse(localStorage.getItem(historyKey) || '[]');
           existingHistory.unshift(historyItem);
-          localStorage.setItem('installation_history', JSON.stringify(existingHistory));
+          localStorage.setItem(historyKey, JSON.stringify(existingHistory));
           
           console.log('[SyncManager] Successfully synced item');
         } catch (err) {
@@ -56,7 +63,7 @@ const SyncManager = () => {
         }
       }
 
-      localStorage.setItem('installation_outbox', JSON.stringify(remainingItems));
+      localStorage.setItem(outboxKey, JSON.stringify(remainingItems));
       
       if (remainingItems.length === 0 && outbox.length > 0) {
         // All synced!
@@ -77,7 +84,7 @@ const SyncManager = () => {
       window.removeEventListener('online', syncOutbox);
       clearInterval(interval);
     };
-  }, []);
+  }, [username]);
 
   return null;
 };

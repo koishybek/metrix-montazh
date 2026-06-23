@@ -6,6 +6,7 @@ import { QrCode, Check, ChevronDown, Loader2, Search, FileText } from 'lucide-re
 import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
 import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes, getServiceNodes, getNodeDetail } from '../api';
 import streetsData from '../assets/streets.json';
+import { useAuth } from '../context/AuthContext';
 import type { Street, PortMode, MeterModel, ServiceNode, NodeAdditionalField } from '../types';
 
 interface DictionaryItem {
@@ -15,6 +16,8 @@ interface DictionaryItem {
 
 const NewInstallation: React.FC = () => {
   const location = useLocation();
+  const { user } = useAuth();
+  const username = user?.username || 'anon'; // scopes drafts/outbox/history + stamps the act
 
   // -- State --
   const [submitting, setSubmitting] = useState(false);
@@ -321,9 +324,9 @@ const NewInstallation: React.FC = () => {
       dynamicData
     };
 
-    const existingDrafts = JSON.parse(localStorage.getItem('installation_drafts') || '[]');
+    const existingDrafts = JSON.parse(localStorage.getItem(`installation_drafts_${username}`) || '[]');
     existingDrafts.unshift(draft); // Add to top
-    localStorage.setItem('installation_drafts', JSON.stringify(existingDrafts));
+    localStorage.setItem(`installation_drafts_${username}`, JSON.stringify(existingDrafts));
     alert('Черновик сохранен в "Истории"');
   };
 
@@ -687,6 +690,7 @@ const NewInstallation: React.FC = () => {
         }
         data.lat = lat;
         data.lng = lng;
+        if (username && username !== 'anon') data.installed_by = username; // attributes the act to the installer
         return data;
       })(),
       consumer: consumerName || "",
@@ -727,9 +731,9 @@ const NewInstallation: React.FC = () => {
         address
       };
 
-      const outbox = JSON.parse(localStorage.getItem('installation_outbox') || '[]');
-      outbox.push(outboxItem);
-      localStorage.setItem('installation_outbox', JSON.stringify(outbox));
+      const outbox = JSON.parse(localStorage.getItem(`installation_outbox_${username}`) || '[]');
+      outbox.push({ ...outboxItem, installedBy: username });
+      localStorage.setItem(`installation_outbox_${username}`, JSON.stringify(outbox));
 
       alert('Оффлайн: Установка сохранена в очередь. Она будет отправлена автоматически при появлении интернета.');
       resetForm();
@@ -756,16 +760,20 @@ const NewInstallation: React.FC = () => {
       console.log('Sending payload:', JSON.stringify(finalPayload, null, 2));
 
       // Create Meter
-      await api.post(endpoints.meter, finalPayload);
+      const meterRes = await api.post(endpoints.meter, finalPayload);
+      const createdMeterId = meterRes.data?.id ?? null;
 
-      // Save to History
+      // Save to History. status is no longer hardcoded "success": we keep the
+      // created meter id and its upload_status (starts null = "в разработке";
+      // the History page refetches it and it becomes "Принято в систему АСИЦРА").
       const historyItem = {
         timestamp: new Date().toISOString(),
         address,
         houseNumber,
         meterNumber,
         modemSerial,
-        status: 'success',
+        meterId: createdMeterId,
+        upload_status: meterRes.data?.upload_status ?? null,
         ...finalPayload,
         consumerName,
         consumerPhone,
@@ -775,12 +783,12 @@ const NewInstallation: React.FC = () => {
         port,
         apartment
       };
-      const existingHistory = JSON.parse(localStorage.getItem('installation_history') || '[]');
+      const existingHistory = JSON.parse(localStorage.getItem(`installation_history_${username}`) || '[]');
       existingHistory.unshift(historyItem);
-      localStorage.setItem('installation_history', JSON.stringify(existingHistory));
+      localStorage.setItem(`installation_history_${username}`, JSON.stringify(existingHistory));
 
       resetForm();
-      alert('Установка успешно создана!');
+      alert('Акт создан. Статус: «В разработке» — после обработки станет «Принято в систему АСИЦРА» (видно в Истории).');
     } catch (err: any) {
       console.error('Submission error:', err);
       let msg = 'Ошибка при создании установки';
