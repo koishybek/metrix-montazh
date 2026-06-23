@@ -4,10 +4,9 @@ import { format } from 'date-fns';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { QrCode, Check, ChevronDown, Loader2, Search, FileText } from 'lucide-react';
 import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
-import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes } from '../api';
+import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes, getServiceNodes, getNodeDetail } from '../api';
 import streetsData from '../assets/streets.json';
-import { AUTO_NODE_BY_RESOURCE } from '../constants/resourceNodes';
-import type { Street, PortMode, MeterModel } from '../types';
+import type { Street, PortMode, MeterModel, ServiceNode, NodeAdditionalField } from '../types';
 
 interface DictionaryItem {
   id: number;
@@ -24,6 +23,19 @@ const NewInstallation: React.FC = () => {
   // 1. Resource Type & Hidden Fields
   const [resourceType, setResourceType] = useState<'cold' | 'hot' | null>(null);
   const [node, setNode] = useState<number>(20);
+  // Region / organization (IoT-Exponenta service company). Picking it sets `node`
+  // and, via the node detail, the region-specific extra fields. This replaces the
+  // old Almaty-only auto-node (cold->20 / hot->256).
+  const [serviceNodes, setServiceNodes] = useState<ServiceNode[]>([]);
+  const [selectedNode, setSelectedNode] = useState<ServiceNode | null>(null);
+  const [nodeFields, setNodeFields] = useState<NodeAdditionalField[]>([]); // selected node's additional_fields
+  const [dynamicData, setDynamicData] = useState<Record<string, string>>({}); // values for generic per-utility fields
+  // Almaty Su (node 20) keeps its bespoke street-autocomplete + IPU class UI;
+  // every other utility is driven generically from nodeFields.
+  const isAlmatySu = selectedNode?.id === 20 || nodeFields.some(f => (f.name || '').includes('almaty_su_street_id'));
+  // City used to scope the Yandex geocoder/address search. Falls back to Almaty
+  // (the original behaviour) until a region is picked.
+  const geoCity = selectedNode?.city || 'Алматы';
   const [clientSector, setClientSector] = useState<'private' | 'legal' | 'multi_apartment' | 'physical'>('legal');
   const [description, setDescription] = useState('');
   const [joinDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -123,6 +135,8 @@ const NewInstallation: React.FC = () => {
     if (location.state && location.state.draft) {
       const draft = location.state.draft;
       setResourceType(draft.resourceType || null);
+      if (draft.serviceNode) selectRegion(draft.serviceNode);
+      if (draft.dynamicData) setDynamicData(draft.dynamicData);
       setModemSerial(draft.modemSerial || '');
       setMeterNumber(draft.meterNumber || '');
       setAddress(draft.address || '');
@@ -170,21 +184,26 @@ const NewInstallation: React.FC = () => {
     }
   }, [location]);
 
-  // Sync Resource switch dependent fields
+  // Restore the last picked region/organization — installers usually work one
+  // region for a long stretch, so this saves them re-selecting every act.
+  // Skipped when continuing a draft (the draft carries its own region).
   useEffect(() => {
-    if (resourceType === 'cold') {
-      setNode(AUTO_NODE_BY_RESOURCE[1]);
-    } else if (resourceType === 'hot') {
-      setNode(AUTO_NODE_BY_RESOURCE[2]);
+    if (location.state && (location.state as any).draft) return;
+    const saved = localStorage.getItem('last_service_node');
+    if (saved) {
+      try {
+        selectRegion(JSON.parse(saved) as ServiceNode);
+      } catch { /* ignore corrupt cache */ }
     }
-  }, [resourceType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update map when house number changes
   useEffect(() => {
     if (address && houseNumber && houseNumber.length > 0) {
       const timeoutId = setTimeout(() => {
         const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
-        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=Алматы, ${address}, ${houseNumber}&format=json`)
+        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=${encodeURIComponent(`${geoCity}, ${address}, ${houseNumber}`)}&format=json`)
           .then(res => res.json())
           .then(data => {
             const geoObject = data.response.GeoObjectCollection.featureMember[0]?.GeoObject;
@@ -200,7 +219,7 @@ const NewInstallation: React.FC = () => {
       }, 1000);
       return () => clearTimeout(timeoutId);
     }
-  }, [address, houseNumber]);
+  }, [address, houseNumber, geoCity]);
 
   // Load Port Modes and Meter Models with Caching
   useEffect(() => {
@@ -229,9 +248,27 @@ const NewInstallation: React.FC = () => {
     loadCachedOrFetch('meter_models_cache', 'meter_models_ts', setMeterModels, getMeterModels);
     loadCachedOrFetch('installation_places_cache', 'installation_places_ts', setInstallationPlaces, getInstallationPlaces);
     loadCachedOrFetch('object_types_cache', 'object_types_ts', setObjectTypes, getObjectTypes);
+    loadCachedOrFetch('service_nodes_cache', 'service_nodes_ts', setServiceNodes, getServiceNodes);
   }, []);
 
   // -- Handlers --
+
+  // Pick a region/organization: set meter.node, remember it, and load the
+  // node's additional_fields (the per-utility extra-field schema).
+  const selectRegion = async (sn: ServiceNode | null) => {
+    setSelectedNode(sn);
+    setNodeFields([]);
+    setDynamicData({});
+    if (!sn) return;
+    setNode(sn.id);
+    localStorage.setItem('last_service_node', JSON.stringify(sn));
+    try {
+      const detail = await getNodeDetail(sn.id);
+      setNodeFields(Array.isArray(detail?.additional_fields) ? detail.additional_fields : []);
+    } catch (err) {
+      console.error('Failed to load node detail', err);
+    }
+  };
 
   const saveDraft = () => {
     const draft = {
@@ -257,7 +294,9 @@ const NewInstallation: React.FC = () => {
       manualStreetCode,
       selectedStreet,
       currentCoords,
-      deviceDistrict
+      deviceDistrict,
+      serviceNode: selectedNode,
+      dynamicData
     };
 
     const existingDrafts = JSON.parse(localStorage.getItem('installation_drafts') || '[]');
@@ -273,16 +312,18 @@ const NewInstallation: React.FC = () => {
     if (value.length > 2) {
       const timeoutId = setTimeout(() => {
         const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
-        // Add bbox for Almaty and focus search
-        const almatyBbox = '76.7,43.1,77.1,43.4'; 
-        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=Алматы, ${value}&bbox=${almatyBbox}&format=json`)
+        // Almaty gets a tighter bbox to focus results; other cities search broadly.
+        const bbox = geoCity === 'Алматы' ? '&bbox=76.7,43.1,77.1,43.4' : '';
+        const geo = encodeURIComponent(`${geoCity}, ${value}`);
+        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=${geo}${bbox}&format=json`)
           .then(res => res.json())
           .then(data => {
             const featureMember = data.response.GeoObjectCollection.featureMember;
             const suggestions: Street[] = featureMember.map((item: any) => {
               const pos = item.GeoObject.Point.pos.split(' ');
+              const fullText = item.GeoObject.metaDataProperty.GeocoderMetaData.text || '';
               return {
-                Название: item.GeoObject.metaDataProperty.GeocoderMetaData.text.replace('Казахстан, Алматы, ', '').replace('Казахстан, город Алматы, ', ''),
+                Название: fullText.replace(`Казахстан, ${geoCity}, `, '').replace(`Казахстан, город ${geoCity}, `, ''),
                 Код: "0",
                 lng: parseFloat(pos[0]),
                 lat: parseFloat(pos[1])
@@ -544,6 +585,7 @@ const NewInstallation: React.FC = () => {
   const handleSubmit = async () => {
     setError(null);
     if (!resourceType) { alert('Выберите тип ресурса'); return; }
+    if (!selectedNode) { alert('Выберите регион / организацию'); return; }
     if (!modemSerial) { alert('Введите серийный номер модема'); return; }
     if (!deviceId) { alert('Сначала выберите устройство из списка поиска'); return; } 
     if (portModeId === null) { alert('Выберите режим работы устройства'); return; }
@@ -553,7 +595,7 @@ const NewInstallation: React.FC = () => {
     if (!houseNumber) { alert('Введите номер дома'); return; }
     if (!joinReading) { alert('Введите показания'); return; }
 
-    if (resourceType === 'cold' && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
+    if (isAlmatySu && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
       const confirmed = window.confirm(
         'Улица не выбрана из справочника. Акт будет создан без кода улицы Алматы Су. Продолжить?'
       );
@@ -564,9 +606,28 @@ const NewInstallation: React.FC = () => {
     const selectedMode = portModes.find(m => m.id === portModeId);
     const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
     const streetName = selectedStreet?.Название || address;
-    const streetCode = manualStreetCode || selectedStreet?.Код;
     const lat = currentCoords.lat;
     const lng = currentCoords.lng;
+
+    // Region-specific extra fields from the selected node's schema. Almaty Su
+    // keeps its bespoke street/IPU handling below; every other utility's fields
+    // (e.g. Karaganda: check_date, address_code, район) are collected generically
+    // from dynamicData and routed top-level or into additional_data by `name`.
+    const extraTopLevel: any = {};
+    const extraAdditional: any = {};
+    const AD_PREFIX = 'additional_data.';
+    for (const f of nodeFields) {
+      if (f.name === 'additional_data.almaty_su_street_id' || f.name === 'additional_data.district') continue;
+      const raw = dynamicData[f.name];
+      if (raw == null || raw === '') continue;
+      const value = f.type === 'select' ? Number(raw) : raw;
+      if (f.name.startsWith(AD_PREFIX)) extraAdditional[f.name.slice(AD_PREFIX.length)] = value;
+      else extraTopLevel[f.name] = value;
+    }
+    if (isAlmatySu) {
+      const sc = manualStreetCode || selectedStreet?.Код;
+      if (sc && sc !== "0") extraTopLevel.address_code = sc;
+    }
 
     const meterPayload: any = {
       serial_number: meterNumber || "",
@@ -578,14 +639,12 @@ const NewInstallation: React.FC = () => {
       client_sector: clientSector,
       street: streetName,
       house: houseNumber,
-      address_code: streetCode && streetCode !== "0" ? streetCode : null,
+      ...extraTopLevel,
       additional_data: (() => {
-        const data: any = {};
-        if (resourceType === 'cold') {
+        const data: any = { ...extraAdditional };
+        if (isAlmatySu) {
           const streetId = manualStreetCode || selectedStreet?.Код;
-          if (streetId && streetId !== "0") {
-            data.almaty_su_street_id = streetId;
-          }
+          if (streetId && streetId !== "0") data.almaty_su_street_id = streetId;
           data.district = deviceDistrict || 2;
         }
         data.lat = lat;
@@ -606,10 +665,10 @@ const NewInstallation: React.FC = () => {
     };
 
     const addressPayload = {
-      province: 'г. Алматы',
-      locality: 'г. Алматы',
-      area: 'городской акимат Алматы',
-      district: 'Алматы',
+      province: geoCity,
+      locality: geoCity,
+      area: '',
+      district: geoCity,
       street: streetName,
       house: houseNumber,
       lng: lng,
@@ -730,6 +789,32 @@ const NewInstallation: React.FC = () => {
               Горячая вода (ГВС)
             </button>
           </div>
+        </section>
+
+        {/* Region / Organization (sets meter.node) */}
+        <section className="space-y-2">
+          <label className="text-sm font-semibold text-gray-700">Регион / организация <span className="text-red-500">*</span></label>
+          <div className="relative">
+            <select
+              value={selectedNode?.id ?? ''}
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                selectRegion(serviceNodes.find(n => n.id === id) || null);
+              }}
+              className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              <option value="">Выберите регион...</option>
+              {serviceNodes.map(n => (
+                <option key={n.id} value={n.id}>
+                  {n.city ? `${n.city} — ` : ''}{n.supplier || n.name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+          </div>
+          {selectedNode && (
+            <p className="text-[11px] text-gray-500 mt-1">Узел: {selectedNode.name} (ID {selectedNode.id})</p>
+          )}
         </section>
 
         {/* Modem Serial & Auto-Config */}
@@ -954,7 +1039,7 @@ const NewInstallation: React.FC = () => {
                 className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none pr-10"
               />
               <Search className="absolute right-4 top-4 text-gray-400" size={20} />
-              <p className="text-[10px] text-gray-400 mt-1 ml-1">Поиск по Яндекс Картам (только Алматы)</p>
+              <p className="text-[10px] text-gray-400 mt-1 ml-1">Поиск по Яндекс Картам ({geoCity})</p>
               {showSuggestions && suggestedStreets.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-30 max-h-60 overflow-y-auto">
                   {suggestedStreets.map((s, idx) => (
@@ -973,8 +1058,8 @@ const NewInstallation: React.FC = () => {
           </div>
         </section>
 
-        {/* Manual Street Code for Almaty Su */}
-        {resourceType === 'cold' && (
+        {/* Manual Street Code — only when the selected node (Almaty Su) requires it */}
+        {isAlmatySu && (
           <section className="space-y-2">
             <label className="text-sm font-semibold text-gray-700">Код улицы в базе Алматы Су</label>
             <input
@@ -987,6 +1072,38 @@ const NewInstallation: React.FC = () => {
             <p className="text-[10px] text-gray-400 mt-1 ml-1">Если код не найден автоматически, введите его вручную</p>
           </section>
         )}
+
+        {/* Generic per-utility extra fields from node.additional_fields
+            (e.g. Karaganda: дата поверки, код адреса, район). Almaty Su's street
+            code is handled above and its IPU class below; everything else here. */}
+        {nodeFields
+          .filter(f => f.name !== 'additional_data.almaty_su_street_id' && f.name !== 'additional_data.district')
+          .map(f => (
+            <section key={f.name} className="space-y-2">
+              <label className="text-sm font-semibold text-gray-700">{f.label}</label>
+              {f.type === 'select' && Array.isArray(f.choices) ? (
+                <div className="relative">
+                  <select
+                    value={dynamicData[f.name] ?? ''}
+                    onChange={(e) => setDynamicData(prev => ({ ...prev, [f.name]: e.target.value }))}
+                    className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="">Выберите...</option>
+                    {f.choices.map(c => <option key={String(c.id)} value={String(c.id)}>{c.name}</option>)}
+                  </select>
+                  <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+                </div>
+              ) : (
+                <input
+                  type={f.type === 'date' ? 'date' : 'text'}
+                  value={dynamicData[f.name] ?? ''}
+                  onChange={(e) => setDynamicData(prev => ({ ...prev, [f.name]: e.target.value }))}
+                  className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              )}
+            </section>
+          ))
+        }
 
         {/* House and Flat */}
         <div className="grid grid-cols-2 gap-4">
@@ -1084,8 +1201,8 @@ const NewInstallation: React.FC = () => {
 
         {/* Client Sector removed as it is now default legal and hidden */}
 
-        {/* IPU Class (District) for Almaty Su */}
-        {resourceType === 'cold' && (
+        {/* IPU Class (District) — Almaty Su only */}
+        {isAlmatySu && (
           <section className="space-y-2">
             <label className="text-sm font-semibold text-gray-700">Класс ИПУ <span className="text-red-500">*</span></label>
             <div className="grid grid-cols-2 gap-2">
