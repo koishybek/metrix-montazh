@@ -567,19 +567,35 @@ const NewInstallation: React.FC = () => {
   };
   */
 
+  // Clear device/meter/consumer fields after a successful submit so nothing
+  // stale carries into the next act. Region (selectedNode) and resource type are
+  // intentionally kept — installers usually do many acts in the same area.
   const resetForm = () => {
     setModemSerial('');
     setDeviceId(null);
     setDeviceAddress(null);
+    setDeviceType(null);
+    setDeviceTypeName('');
+    setSuggestedDevices([]);
+    setShowDeviceSuggestions(false);
+    setDeviceSearchDone(false);
+    setPortModeId(null);
+    setPortModes([]);
+    setIsPortLocked(false);
+    setSelectedMeterModelId('');
+    setMeterSearchTerm('');
     setMeterNumber('');
     setAddress('');
     setHouseNumber('');
+    setApartment('');
+    setSelectedStreet(null);
     setConsumerName('');
     setConsumerPhone('+7(7');
     setAccountId('');
     setJoinReading('');
     setPhotos([]);
     setManualStreetCode('');
+    setDynamicData({});
   };
 
   const handleSubmit = async () => {
