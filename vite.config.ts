@@ -29,4 +29,12 @@ export default defineConfig({
       }
     })
   ],
+  // Dev-only proxy so the browser can reach the Smart Metrix API without CORS.
+  // The production bundle is unaffected (it uses the absolute API base URL).
+  server: {
+    proxy: {
+      '/api': { target: 'https://sm.iot-exp.kz', changeOrigin: true, secure: true },
+      '/api-token-auth': { target: 'https://sm.iot-exp.kz', changeOrigin: true, secure: true },
+    },
+  },
 })
