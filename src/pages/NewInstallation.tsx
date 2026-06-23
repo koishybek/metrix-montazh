@@ -30,9 +30,13 @@ const NewInstallation: React.FC = () => {
   const [selectedNode, setSelectedNode] = useState<ServiceNode | null>(null);
   const [nodeFields, setNodeFields] = useState<NodeAdditionalField[]>([]); // selected node's additional_fields
   const [dynamicData, setDynamicData] = useState<Record<string, string>>({}); // values for generic per-utility fields
+  const [subNode, setSubNode] = useState<{ id: number; name: string } | null>(null); // chosen child node, if any
   // Almaty Su (node 20) keeps its bespoke street-autocomplete + IPU class UI;
   // every other utility is driven generically from nodeFields.
   const isAlmatySu = selectedNode?.id === 20 || nodeFields.some(f => (f.name || '').includes('almaty_su_street_id'));
+  // Almaty (ХВС node 20 + ГВС node 256) keeps its current behaviour — no subnode
+  // picker. Other regions let the installer drill into a subnode when one exists.
+  const isAlmaty = selectedNode?.id === 20 || selectedNode?.id === 256;
   // City used to scope the Yandex geocoder/address search. Falls back to Almaty
   // (the original behaviour) until a region is picked.
   const geoCity = selectedNode?.city || 'Алматы';
@@ -137,6 +141,7 @@ const NewInstallation: React.FC = () => {
       setResourceType(draft.resourceType || null);
       if (draft.serviceNode) selectRegion(draft.serviceNode);
       if (draft.dynamicData) setDynamicData(draft.dynamicData);
+      if (draft.subNode) setSubNode(draft.subNode);
       setModemSerial(draft.modemSerial || '');
       setMeterNumber(draft.meterNumber || '');
       setAddress(draft.address || '');
@@ -248,7 +253,7 @@ const NewInstallation: React.FC = () => {
     loadCachedOrFetch('meter_models_cache', 'meter_models_ts', setMeterModels, getMeterModels);
     loadCachedOrFetch('installation_places_cache', 'installation_places_ts', setInstallationPlaces, getInstallationPlaces);
     loadCachedOrFetch('object_types_cache', 'object_types_ts', setObjectTypes, getObjectTypes);
-    loadCachedOrFetch('service_nodes_cache', 'service_nodes_ts', setServiceNodes, getServiceNodes);
+    loadCachedOrFetch('service_nodes_cache_v2', 'service_nodes_ts_v2', setServiceNodes, getServiceNodes);
   }, []);
 
   // -- Handlers --
@@ -259,6 +264,7 @@ const NewInstallation: React.FC = () => {
     setSelectedNode(sn);
     setNodeFields([]);
     setDynamicData({});
+    setSubNode(null);
     if (!sn) return;
     setNode(sn.id);
     localStorage.setItem('last_service_node', JSON.stringify(sn));
@@ -296,6 +302,7 @@ const NewInstallation: React.FC = () => {
       currentCoords,
       deviceDistrict,
       serviceNode: selectedNode,
+      subNode,
       dynamicData
     };
 
@@ -677,7 +684,7 @@ const NewInstallation: React.FC = () => {
       installation_place: Number(installationPlace) || null,
       device: deviceId,
       resource_type: resourceType === 'cold' ? 1 : 2,
-      node: node,
+      node: subNode?.id ?? selectedNode?.id ?? node,
     };
 
     const addressPayload = {
@@ -832,6 +839,28 @@ const NewInstallation: React.FC = () => {
             <p className="text-[11px] text-gray-500 mt-1">Узел: {selectedNode.name} (ID {selectedNode.id})</p>
           )}
         </section>
+
+        {/* Subnode picker — only when the node has children and isn't Almaty.
+            If there are no subnodes we show nothing (the meter attaches to the node). */}
+        {selectedNode && !isAlmaty && (selectedNode.children?.length ?? 0) > 0 && (
+          <section className="space-y-2">
+            <label className="text-sm font-semibold text-gray-700">Подузел</label>
+            <div className="relative">
+              <select
+                value={subNode?.id ?? ''}
+                onChange={(e) => {
+                  const id = Number(e.target.value);
+                  setSubNode(id ? (selectedNode.children?.find(c => c.id === id) ?? null) : null);
+                }}
+                className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
+              >
+                <option value="">{selectedNode.name} (весь узел)</option>
+                {(selectedNode.children ?? []).map(ch => <option key={ch.id} value={ch.id}>{ch.name}</option>)}
+              </select>
+              <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+            </div>
+          </section>
+        )}
 
         {/* Modem Serial & Auto-Config */}
         <section className="space-y-2 relative">

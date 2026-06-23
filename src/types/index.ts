@@ -47,6 +47,7 @@ export interface ServiceNode {
   name: string;     // e.g. "ТОО \"IoT-Exponenta\" Алматы Су"
   supplier: string; // nearest supplier ancestor, e.g. "ГКП \"Алматы Су\""
   city: string;     // nearest city/region ancestor, e.g. "Алматы"
+  children: Array<{ id: number; name: string }>; // subnodes the meter can attach to
 }
 
 // A node.additional_fields entry — the backend declares per-utility which extra

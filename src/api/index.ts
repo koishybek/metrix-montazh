@@ -87,7 +87,8 @@ export const getServiceNodes = async (): Promise<ServiceNode[]> => {
         if (n.type === 3 || n.type === 4 || n.type === 5) c = n.name || c;
         if (n.type === 16) s = n.name || s; // supplier (водоканал / тепловые сети)
         if (n.type === 17 && /IoT-?Exponenta/i.test(n.name || '')) {
-            out.push({ id: n.id, name: n.name, supplier: s, city: c });
+            const children = (n.children || []).map((ch: any) => ({ id: ch.id, name: ch.name }));
+            out.push({ id: n.id, name: n.name, supplier: s, city: c, children });
         }
         for (const ch of (n.children || [])) walk(ch, c, s);
     };
