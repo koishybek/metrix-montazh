@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { format } from 'date-fns';
 import { Html5QrcodeScanner } from 'html5-qrcode';
@@ -38,6 +38,10 @@ const NewInstallation: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [suggestedDevices, setSuggestedDevices] = useState<any[]>([]);
   const [showDeviceSuggestions, setShowDeviceSuggestions] = useState(false);
+  const [searchingDevices, setSearchingDevices] = useState(false);
+  const [deviceSearchDone, setDeviceSearchDone] = useState(false); // true once a search has returned, for "not found" feedback
+  const deviceSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceSearchSeq = useRef(0); // guards against out-of-order responses
 
   // Port Logic State
   const [port, setPort] = useState<number>(2); // Default to 2
@@ -365,64 +369,59 @@ const NewInstallation: React.FC = () => {
     geocodeByCoords(lat, lng);
   };
 
+  // Runs the actual device lookup. NO auto-select — the installer always picks
+  // from the list. Server-side `search` already matches EUI, description (where
+  // the printed serial number lives) and address, so we rely on it directly
+  // instead of re-filtering client-side on EUI only.
+  const runDeviceSearch = async (value: string) => {
+    const term = value.trim();
+    if (term.length < 3) {
+      setSuggestedDevices([]);
+      setShowDeviceSuggestions(false);
+      setDeviceSearchDone(false);
+      return;
+    }
+    const seq = ++deviceSearchSeq.current;
+    setSearchingDevices(true);
+    setShowDeviceSuggestions(true);
+    try {
+      const res = await api.get('/api/v1/device/', {
+        params: { search: term, ordering: '-sent_date', page_size: 20 },
+      });
+      if (seq !== deviceSearchSeq.current) return; // a newer search superseded this one
+      const results = Array.isArray(res.data?.results) ? res.data.results : [];
+      setSuggestedDevices(results);
+      setDeviceSearchDone(true);
+    } catch (err) {
+      if (seq !== deviceSearchSeq.current) return;
+      console.error('Device search failed', err);
+      setSuggestedDevices([]);
+      setDeviceSearchDone(true);
+    } finally {
+      if (seq === deviceSearchSeq.current) setSearchingDevices(false);
+    }
+  };
+
   const handleModemSerialChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setModemSerial(value);
+    // Any edit invalidates the previously chosen device.
     setDeviceId(null);
-    setDeviceAddress(null); // Reset device address when EUI changes
+    setDeviceAddress(null);
     setDeviceType(null);
     setDeviceTypeName('');
     setIsPortLocked(false);
 
-    if (value.length >= 3) {
-      const timeoutId = setTimeout(async () => {
-        try {
-          const res = await api.get(`/api/v1/device/?ordering=-sent_date&page=1&page_size=10&search=${value}`);
-          if (res.data && Array.isArray(res.data.results)) {
-            // Sort results: matches at the end of the string go first
-            const sortedResults = [...res.data.results].sort((a: any, b: any) => {
-              const aVal = (a.eui || a.serial_number || '').toString();
-              const bVal = (b.eui || b.serial_number || '').toString();
-              const aEnds = aVal.endsWith(value);
-              const bEnds = bVal.endsWith(value);
-              if (aEnds && !bEnds) return -1;
-              if (!aEnds && bEnds) return 1;
-              return 0;
-            });
-
-            setSuggestedDevices(sortedResults);
-            setShowDeviceSuggestions(true);
-            
-            // Auto-select logic:
-            // 1. Exact match (any length)
-            const exactMatch = sortedResults.find((d: any) => 
-              d.eui === value || d.serial_number === value
-            );
-            
-            if (exactMatch) {
-              selectDevice(exactMatch);
-            } 
-            // 2. Unique match by any part of the string (usually last digits)
-            else {
-              const matches = sortedResults.filter((d: any) => {
-                const s = (d.eui || d.serial_number || '').toString().toLowerCase();
-                return s.includes(value.toLowerCase());
-              });
-
-              if (matches.length === 1) {
-                selectDevice(matches[0]);
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Device search failed', err);
-        }
-      }, 300); // Faster debounce (300ms instead of 500ms)
-      return () => clearTimeout(timeoutId);
-    } else {
+    // Real debounce: cancel the pending lookup on every keystroke (the old code
+    // returned a cleanup fn from an onChange handler, which React never calls).
+    if (deviceSearchTimer.current) clearTimeout(deviceSearchTimer.current);
+    if (value.trim().length < 3) {
       setSuggestedDevices([]);
       setShowDeviceSuggestions(false);
+      setDeviceSearchDone(false);
+      return;
     }
+    deviceSearchTimer.current = setTimeout(() => runDeviceSearch(value), 350);
   };
 
   const selectDevice = async (device: any) => {
@@ -434,10 +433,12 @@ const NewInstallation: React.FC = () => {
       setDeviceDistrict(Number(device.additional_data.district));
     }
 
-    // Store device type info
-    const dType = device.type || device.device_model; // Check API response structure
+    // Store device type info. NOTE: the list endpoint returns `type__name`
+    // (double underscore), not `type_name` — the old code read the wrong key
+    // and always showed "Type 20" instead of the real model name.
+    const dType = device.type || device.device_model;
     setDeviceType(dType);
-    setDeviceTypeName(device.type_name || `Type ${dType}`);
+    setDeviceTypeName(device.type__name || device.type_name || `Тип ${dType}`);
     setPortModeId(null); // Reset port mode on device change
 
     // Fetch port modes for this device model
@@ -479,13 +480,19 @@ const NewInstallation: React.FC = () => {
         false
       );
       scanner.render((decodedText) => {
-        setModemSerial(decodedText);
         scanner.clear();
         setIsScanning(false);
-        // Trigger search immediately after scan if needed
-        handleModemSerialChange({ target: { value: decodedText } } as any);
+        // Put the scanned value in the field and search immediately — but the
+        // installer still confirms the right device from the list (no auto-select).
+        setModemSerial(decodedText);
+        setDeviceId(null);
+        setDeviceAddress(null);
+        setDeviceType(null);
+        setDeviceTypeName('');
+        setIsPortLocked(false);
+        runDeviceSearch(decodedText);
       }, () => {
-        // ignore errors
+        // ignore scan errors
       });
     }, 100);
   };
@@ -754,16 +761,53 @@ const NewInstallation: React.FC = () => {
           )}
 
           {showDeviceSuggestions && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 max-h-60 overflow-y-auto">
-              {suggestedDevices.map((d) => (
-                <div key={d.id} onClick={() => selectDevice(d)} className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 flex justify-between items-center">
-                  <div>
-                    <span className="font-medium">{d.eui || d.serial_number}</span>
-                    <span className="text-xs text-gray-500 ml-2">({d.type_name || d.type || 'Unknown Type'})</span>
-                  </div>
-                  <span className="text-xs text-gray-400">ID: {d.id}</span>
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 max-h-80 overflow-y-auto">
+              {searchingDevices && (
+                <div className="flex items-center gap-2 p-4 text-sm text-gray-500">
+                  <Loader2 className="animate-spin text-blue-600" size={18} />
+                  Поиск модема...
                 </div>
-              ))}
+              )}
+
+              {!searchingDevices && deviceSearchDone && suggestedDevices.length === 0 && (
+                <div className="p-4 text-sm text-gray-500 text-center">
+                  Модем не найден. Проверьте серийный номер, EUI или адрес.
+                </div>
+              )}
+
+              {!searchingDevices && suggestedDevices.length > 0 && (
+                <>
+                  <div className="px-3 pt-2 pb-1 text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                    Найдено: {suggestedDevices.length}{suggestedDevices.length >= 20 ? '+ (уточните запрос)' : ''} — выберите ваш модем
+                  </div>
+                  {suggestedDevices.map((d) => (
+                    <button
+                      type="button"
+                      key={d.id}
+                      onClick={() => selectDevice(d)}
+                      className="w-full text-left p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-gray-900 text-sm">
+                          {d.type__name || d.type_name || `Тип ${d.type}`}
+                        </span>
+                        <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full font-bold ${d.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                          {d.is_active ? 'активен' : 'неактивен'}
+                        </span>
+                      </div>
+                      {d.description && (
+                        <div className="text-sm text-gray-700 mt-0.5 break-words">{d.description}</div>
+                      )}
+                      {d.address_name && (
+                        <div className="text-xs text-gray-500 mt-0.5">Адрес: {d.address_name}</div>
+                      )}
+                      <div className="text-[11px] text-gray-400 font-mono mt-1 break-all">
+                        EUI: {d.eui || d.serial_number || '—'} · ID {d.id}
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           )}
           {isScanning && (
