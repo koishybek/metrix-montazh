@@ -139,7 +139,7 @@ const NewInstallation: React.FC = () => {
     if (location.state && location.state.draft) {
       const draft = location.state.draft;
       setResourceType(draft.resourceType || null);
-      if (draft.serviceNode) selectRegion(draft.serviceNode);
+      if (draft.serviceNode) selectRegion(draft.serviceNode, false);
       if (draft.dynamicData) setDynamicData(draft.dynamicData);
       if (draft.subNode) setSubNode(draft.subNode);
       setModemSerial(draft.modemSerial || '');
@@ -260,7 +260,7 @@ const NewInstallation: React.FC = () => {
 
   // Pick a region/organization: set meter.node, remember it, and load the
   // node's additional_fields (the per-utility extra-field schema).
-  const selectRegion = async (sn: ServiceNode | null) => {
+  const selectRegion = async (sn: ServiceNode | null, recenter = true) => {
     setSelectedNode(sn);
     setNodeFields([]);
     setDynamicData({});
@@ -273,6 +273,21 @@ const NewInstallation: React.FC = () => {
       setNodeFields(Array.isArray(detail?.additional_fields) ? detail.additional_fields : []);
     } catch (err) {
       console.error('Failed to load node detail', err);
+    }
+    // Center the map on the region's city (best-effort). Skipped when restoring a
+    // draft, which carries its own precise coordinates.
+    if (recenter && sn.city) {
+      try {
+        const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
+        const r = await fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&format=json&results=1&geocode=${encodeURIComponent(sn.city)}`);
+        const data = await r.json();
+        const go = data.response?.GeoObjectCollection?.featureMember?.[0]?.GeoObject;
+        if (go) {
+          const [lng, lat] = go.Point.pos.split(' ').map(Number);
+          setCurrentCoords({ lat, lng });
+          setMapState({ center: [lat, lng], zoom: 12 });
+        }
+      } catch { /* keep default center */ }
     }
   };
 

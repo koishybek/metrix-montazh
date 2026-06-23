@@ -72,6 +72,16 @@ export const getObjectTypes = async (): Promise<any[]> => {
     return res.data.results;
 };
 
+// A non-admin's node tree is scoped server-side and rooted at the supplier, so
+// it has no city/region ancestor. Derive the geocoder city from the service
+// node id when the tree doesn't provide one. (Admin/full trees use the ancestor;
+// both resolve to the same city for known regions.)
+const CITY_BY_NODE: Record<number, string> = {
+    20: 'Алматы', 256: 'Алматы', 50: 'Туркестан', 78: 'Караганда', 920: 'Караганда',
+    411: 'Кызылорда', 518: 'Кызылорда', 543: 'Косшы', 24: 'Талдыкорган',
+    154: 'Темиртау', 166: 'Актау', 177: 'Атырау', 510: 'Бишкек', 42: 'Астана',
+};
+
 // Walk the node tree (one recursive call) and collect IoT-Exponenta service
 // companies (type 17) with their city/supplier context, for the region picker.
 export const getServiceNodes = async (): Promise<ServiceNode[]> => {
@@ -88,7 +98,7 @@ export const getServiceNodes = async (): Promise<ServiceNode[]> => {
         if (n.type === 16) s = n.name || s; // supplier (водоканал / тепловые сети)
         if (n.type === 17 && /IoT-?Exponenta/i.test(n.name || '')) {
             const children = (n.children || []).map((ch: any) => ({ id: ch.id, name: ch.name }));
-            out.push({ id: n.id, name: n.name, supplier: s, city: c, children });
+            out.push({ id: n.id, name: n.name, supplier: s, city: c || CITY_BY_NODE[n.id] || '', children });
         }
         for (const ch of (n.children || [])) walk(ch, c, s);
     };
