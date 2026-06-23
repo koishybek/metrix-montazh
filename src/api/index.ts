@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { PortMode, MeterModel } from '../types';
+import type { PortMode, MeterModel, ServiceNode } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://sm.iot-exp.kz';
 
@@ -70,6 +70,36 @@ export const getInstallationPlaces = async (): Promise<any[]> => {
 export const getObjectTypes = async (): Promise<any[]> => {
     const res = await api.get(`${endpoints.objectType}?page_size=300`);
     return res.data.results;
+};
+
+// Walk the node tree (one recursive call) and collect IoT-Exponenta service
+// companies (type 17) with their city/supplier context, for the region picker.
+export const getServiceNodes = async (): Promise<ServiceNode[]> => {
+    const res = await api.get('/api/v1/node/', { params: { parent: 'none', page_size: 500 } });
+    const roots = Array.isArray(res.data?.results)
+        ? res.data.results
+        : (Array.isArray(res.data) ? res.data : []);
+    const out: ServiceNode[] = [];
+    const walk = (n: any, city: string, supplier: string) => {
+        let c = city;
+        let s = supplier;
+        // type 3=область, 4=район, 5=город — keep the most specific seen on the way down
+        if (n.type === 3 || n.type === 4 || n.type === 5) c = n.name || c;
+        if (n.type === 16) s = n.name || s; // supplier (водоканал / тепловые сети)
+        if (n.type === 17 && /IoT-?Exponenta/i.test(n.name || '')) {
+            out.push({ id: n.id, name: n.name, supplier: s, city: c });
+        }
+        for (const ch of (n.children || [])) walk(ch, c, s);
+    };
+    for (const r of roots) walk(r, '', '');
+    return out;
+};
+
+// Single node detail — used on selection to read `additional_fields`
+// (inherited down the tree from the supplier).
+export const getNodeDetail = async (id: number): Promise<any> => {
+    const res = await api.get(`/api/v1/node/${id}/`);
+    return res.data;
 };
 
 export default api;
