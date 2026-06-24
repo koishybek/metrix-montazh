@@ -1,23 +1,71 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
-import { FileText, Clock, CheckCircle, ArrowRight, Trash2, Search, Copy } from 'lucide-react';
+import { FileText, Clock, CheckCircle, XCircle, ArrowRight, Trash2, Search, Copy, Loader2 } from 'lucide-react';
+import api from '../api';
+import { useAuth } from '../context/AuthContext';
 
 const History: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const username = user?.username || 'anon'; // history/drafts/outbox are per-account
   const [drafts, setDrafts] = useState<any[]>([]);
+  const [outbox, setOutbox] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    // Load drafts from localStorage
-    const savedDrafts = JSON.parse(localStorage.getItem('installation_drafts') || '[]');
+    const savedDrafts = JSON.parse(localStorage.getItem(`installation_drafts_${username}`) || '[]');
     setDrafts(savedDrafts);
-
-    // Load history
-    const savedHistory = JSON.parse(localStorage.getItem('installation_history') || '[]');
+    const savedOutbox = JSON.parse(localStorage.getItem(`installation_outbox_${username}`) || '[]');
+    setOutbox(savedOutbox);
+    const savedHistory = JSON.parse(localStorage.getItem(`installation_history_${username}`) || '[]');
     setHistory(savedHistory);
-  }, []);
+
+    // Refresh the real upload_status for each created meter so the badge moves
+    // from "В разработке" to "Принято в систему АСИЦРА" once the backend uploads it.
+    const withIds = savedHistory.filter((h: any) => h.meterId);
+    if (withIds.length && navigator.onLine) {
+      setRefreshing(true);
+      (async () => {
+        const updated = await Promise.all(savedHistory.map(async (h: any) => {
+          if (!h.meterId) return h;
+          try {
+            const res = await api.get(`/api/v1/meter/${h.meterId}/`);
+            return { ...h, upload_status: res.data?.upload_status ?? null, upload_date: res.data?.upload_date ?? null };
+          } catch { return h; }
+        }));
+        setHistory(updated);
+        localStorage.setItem(`installation_history_${username}`, JSON.stringify(updated));
+        setRefreshing(false);
+      })();
+    }
+  }, [username]);
+
+  // Map the backend upload_status to a coloured badge.
+  const renderStatus = (item: any) => {
+    const us: string | null = item.upload_status ?? null;
+    if (us && us.startsWith('Принято')) {
+      return (
+        <div className="flex items-center gap-2 text-green-700 bg-green-50 px-3 py-1.5 rounded-lg border border-green-100">
+          <CheckCircle size={14} /><span className="text-xs font-bold">{us}</span>
+        </div>
+      );
+    }
+    if (us && us.startsWith('Не принято')) {
+      return (
+        <div className="flex items-center gap-2 text-red-700 bg-red-50 px-3 py-1.5 rounded-lg border border-red-100">
+          <XCircle size={14} /><span className="text-xs font-bold">{us}</span>
+        </div>
+      );
+    }
+    return (
+      <div className="flex items-center gap-2 text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-100">
+        <Clock size={14} /><span className="text-xs font-bold">В разработке</span>
+      </div>
+    );
+  };
 
   const continueDraft = (draft: any) => {
     navigate('/new-installation', { state: { draft } });
@@ -34,10 +82,12 @@ const History: React.FC = () => {
   };
 
   const deleteDraft = (index: number) => {
-    const newDrafts = [...drafts];
-    newDrafts.splice(index, 1);
-    setDrafts(newDrafts);
-    localStorage.setItem('installation_drafts', JSON.stringify(newDrafts));
+    if (window.confirm('Вы уверены, что хотите удалить этот черновик? Это действие нельзя отменить.')) {
+      const newDrafts = [...drafts];
+      newDrafts.splice(index, 1);
+      setDrafts(newDrafts);
+      localStorage.setItem(`installation_drafts_${username}`, JSON.stringify(newDrafts));
+    }
   };
 
   const filteredHistory = history.filter(item => 
@@ -129,6 +179,37 @@ const History: React.FC = () => {
         )}
       </section>
 
+      {/* Outbox Section */}
+      {outbox.length > 0 && (
+        <section>
+          <div className="flex items-center space-x-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+              <Clock size={18} className="animate-pulse" />
+            </div>
+            <h2 className="text-lg font-bold text-gray-800">Ожидают синхронизации</h2>
+            <span className="bg-blue-600 text-white px-2 py-0.5 rounded-full text-xs font-bold">{outbox.length}</span>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {outbox.map((item, i) => (
+              <div key={i} className="bg-white border-2 border-blue-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 bg-blue-500 text-white text-[10px] px-2 py-1 font-bold uppercase tracking-wider">
+                  В очереди
+                </div>
+                <div className="mb-3">
+                  <h3 className="font-bold text-gray-900">{item.address || 'Без адреса'}</h3>
+                  <p className="text-xs text-gray-500">Дом: {item.house}, № {item.serial_number}</p>
+                </div>
+                <div className="flex items-center text-blue-600 text-xs font-medium">
+                  <Loader2 size={14} className="animate-spin mr-1" />
+                  Отправится автоматически при появлении сети
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* History Section */}
       <section>
         <div className="flex items-center space-x-2 mb-4">
@@ -136,6 +217,11 @@ const History: React.FC = () => {
             <Clock size={18} />
           </div>
           <h2 className="text-lg font-bold text-gray-800">Недавние установки</h2>
+          {refreshing && (
+            <span className="text-xs text-gray-400 flex items-center gap-1">
+              <Loader2 size={12} className="animate-spin" /> обновление статусов…
+            </span>
+          )}
         </div>
 
         {filteredHistory.length === 0 ? (
@@ -163,10 +249,7 @@ const History: React.FC = () => {
                   >
                     <Copy size={14} /> Шаблон
                   </button>
-                  <div className="flex items-center gap-2 text-green-600 bg-green-50 px-3 py-1.5 rounded-lg border border-green-100">
-                    <CheckCircle size={14} />
-                    <span className="text-xs font-bold">Успешно</span>
-                  </div>
+                  {renderStatus(item)}
                 </div>
               </div>
             ))}

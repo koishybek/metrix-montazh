@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
+import SyncManager from './components/SyncManager';
 import Login from './pages/Login';
 import NewInstallation from './pages/NewInstallation';
 import History from './pages/History';
@@ -12,6 +13,7 @@ const App: React.FC = () => {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <SyncManager />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route

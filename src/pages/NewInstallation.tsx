@@ -1,13 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { format } from 'date-fns';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { QrCode, Check, ChevronDown, Loader2, Search } from 'lucide-react';
+import { QrCode, Check, ChevronDown, Loader2, Search, FileText } from 'lucide-react';
 import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
-import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes } from '../api';
+import api, { endpoints, getPortModes, getMeterModels, getInstallationPlaces, getObjectTypes, getServiceNodes, getNodeDetail } from '../api';
 import streetsData from '../assets/streets.json';
-import { AUTO_NODE_BY_RESOURCE } from '../constants/resourceNodes';
-import type { Street, PortMode, MeterModel } from '../types';
+import { useAuth } from '../context/AuthContext';
+import type { Street, PortMode, MeterModel, ServiceNode, NodeAdditionalField } from '../types';
 
 interface DictionaryItem {
   id: number;
@@ -16,6 +16,8 @@ interface DictionaryItem {
 
 const NewInstallation: React.FC = () => {
   const location = useLocation();
+  const { user } = useAuth();
+  const username = user?.username || 'anon'; // scopes drafts/outbox/history + stamps the act
 
   // -- State --
   const [submitting, setSubmitting] = useState(false);
@@ -24,6 +26,23 @@ const NewInstallation: React.FC = () => {
   // 1. Resource Type & Hidden Fields
   const [resourceType, setResourceType] = useState<'cold' | 'hot' | null>(null);
   const [node, setNode] = useState<number>(20);
+  // Region / organization (IoT-Exponenta service company). Picking it sets `node`
+  // and, via the node detail, the region-specific extra fields. This replaces the
+  // old Almaty-only auto-node (cold->20 / hot->256).
+  const [serviceNodes, setServiceNodes] = useState<ServiceNode[]>([]);
+  const [selectedNode, setSelectedNode] = useState<ServiceNode | null>(null);
+  const [nodeFields, setNodeFields] = useState<NodeAdditionalField[]>([]); // selected node's additional_fields
+  const [dynamicData, setDynamicData] = useState<Record<string, string>>({}); // values for generic per-utility fields
+  const [subNode, setSubNode] = useState<{ id: number; name: string } | null>(null); // chosen child node, if any
+  // Almaty Su (node 20) keeps its bespoke street-autocomplete + IPU class UI;
+  // every other utility is driven generically from nodeFields.
+  const isAlmatySu = selectedNode?.id === 20 || nodeFields.some(f => (f.name || '').includes('almaty_su_street_id'));
+  // Almaty (ХВС node 20 + ГВС node 256) keeps its current behaviour — no subnode
+  // picker. Other regions let the installer drill into a subnode when one exists.
+  const isAlmaty = selectedNode?.id === 20 || selectedNode?.id === 256;
+  // City used to scope the Yandex geocoder/address search. Falls back to Almaty
+  // (the original behaviour) until a region is picked.
+  const geoCity = selectedNode?.city || 'Алматы';
   const [clientSector, setClientSector] = useState<'private' | 'legal' | 'multi_apartment' | 'physical'>('legal');
   const [description, setDescription] = useState('');
   const [joinDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -38,6 +57,10 @@ const NewInstallation: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [suggestedDevices, setSuggestedDevices] = useState<any[]>([]);
   const [showDeviceSuggestions, setShowDeviceSuggestions] = useState(false);
+  const [searchingDevices, setSearchingDevices] = useState(false);
+  const [deviceSearchDone, setDeviceSearchDone] = useState(false); // true once a search has returned, for "not found" feedback
+  const deviceSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceSearchSeq = useRef(0); // guards against out-of-order responses
 
   // Port Logic State
   const [port, setPort] = useState<number>(2); // Default to 2
@@ -119,6 +142,9 @@ const NewInstallation: React.FC = () => {
     if (location.state && location.state.draft) {
       const draft = location.state.draft;
       setResourceType(draft.resourceType || null);
+      if (draft.serviceNode) selectRegion(draft.serviceNode, false);
+      if (draft.dynamicData) setDynamicData(draft.dynamicData);
+      if (draft.subNode) setSubNode(draft.subNode);
       setModemSerial(draft.modemSerial || '');
       setMeterNumber(draft.meterNumber || '');
       setAddress(draft.address || '');
@@ -135,28 +161,60 @@ const NewInstallation: React.FC = () => {
       setObjectType(draft.object_type?.toString() || '');
       setApartment(draft.apartment || '');
       setClientSector(draft.client_sector || 'legal');
+      setManualStreetCode(draft.manualStreetCode || '');
+      if (draft.selectedStreet) setSelectedStreet(draft.selectedStreet);
+      if (draft.currentCoords) setCurrentCoords(draft.currentCoords);
+      if (draft.deviceDistrict) setDeviceDistrict(draft.deviceDistrict);
       
       if (draft.modemSerial) {
         setModemSerial(draft.modemSerial);
+        // Automatically try to select the device if we have enough info
+        if (draft.device) {
+          // If the draft has a device object or ID, we can pre-select it
+          // Let's trigger a search and auto-select the first exact match
+          api.get(`/api/v1/device/?search=${draft.modemSerial}`)
+            .then(res => {
+              if (res.data?.results?.length > 0) {
+                const exactMatch = res.data.results.find((d: any) => 
+                  (d.eui === draft.modemSerial || d.serial_number === draft.modemSerial) &&
+                  (draft.device === d.id)
+                );
+                if (exactMatch) {
+                  selectDevice(exactMatch);
+                } else if (res.data.results.length === 1) {
+                  selectDevice(res.data.results[0]);
+                }
+              }
+            })
+            .catch(err => console.error('Auto-select device failed', err));
+        }
       }
     }
   }, [location]);
 
-  // Sync Resource switch dependent fields
+  // Restore the last picked region/organization — installers usually work one
+  // region for a long stretch, so this saves them re-selecting every act.
+  // Per-account, and only restored once the scoped list has loaded AND still
+  // contains it, so a region from a previous login can never leak through.
+  // Skipped when continuing a draft (the draft carries its own region).
   useEffect(() => {
-    if (resourceType === 'cold') {
-      setNode(AUTO_NODE_BY_RESOURCE[1]);
-    } else if (resourceType === 'hot') {
-      setNode(AUTO_NODE_BY_RESOURCE[2]);
-    }
-  }, [resourceType]);
+    if (location.state && (location.state as any).draft) return;
+    if (selectedNode || !serviceNodes.length) return;
+    const saved = localStorage.getItem(`last_service_node_${username}`);
+    if (!saved) return;
+    try {
+      const sn = JSON.parse(saved) as ServiceNode;
+      if (serviceNodes.some(n => n.id === sn.id)) selectRegion(sn);
+    } catch { /* ignore corrupt cache */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceNodes, username]);
 
   // Update map when house number changes
   useEffect(() => {
     if (address && houseNumber && houseNumber.length > 0) {
       const timeoutId = setTimeout(() => {
         const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
-        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=Алматы, ${address}, ${houseNumber}&format=json`)
+        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=${encodeURIComponent(`${geoCity}, ${address}, ${houseNumber}`)}&format=json`)
           .then(res => res.json())
           .then(data => {
             const geoObject = data.response.GeoObjectCollection.featureMember[0]?.GeoObject;
@@ -172,7 +230,7 @@ const NewInstallation: React.FC = () => {
       }, 1000);
       return () => clearTimeout(timeoutId);
     }
-  }, [address, houseNumber]);
+  }, [address, houseNumber, geoCity]);
 
   // Load Port Modes and Meter Models with Caching
   useEffect(() => {
@@ -198,12 +256,74 @@ const NewInstallation: React.FC = () => {
       }
     };
 
+    // Reference data is open to every account, so a shared cache is fine.
     loadCachedOrFetch('meter_models_cache', 'meter_models_ts', setMeterModels, getMeterModels);
     loadCachedOrFetch('installation_places_cache', 'installation_places_ts', setInstallationPlaces, getInstallationPlaces);
     loadCachedOrFetch('object_types_cache', 'object_types_ts', setObjectTypes, getObjectTypes);
   }, []);
 
+  // Service nodes are ACCESS-SCOPED per account (the backend scopes /node/ to the
+  // logged-in installer). They must never be shared across users and must reflect
+  // current grants, so: fetch fresh when online (and cache per-user), and fall back
+  // to THIS account's last cached list only when offline. The previous global
+  // `service_nodes_cache_v2` key leaked one account's regions to the next login.
+  useEffect(() => {
+    const key = `service_nodes_cache_v3_${username}`;
+    let cancelled = false;
+    (async () => {
+      if (navigator.onLine) {
+        try {
+          const data = await getServiceNodes();
+          if (cancelled) return;
+          setServiceNodes(data);
+          localStorage.setItem(key, JSON.stringify(data));
+          return;
+        } catch (err) {
+          console.error('Failed to load service nodes', err);
+        }
+      }
+      const cached = localStorage.getItem(key);
+      if (cached && !cancelled) {
+        try { setServiceNodes(JSON.parse(cached)); } catch { /* ignore corrupt cache */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [username]);
+
   // -- Handlers --
+
+  // Pick a region/organization: set meter.node, remember it, and load the
+  // node's additional_fields (the per-utility extra-field schema).
+  const selectRegion = async (sn: ServiceNode | null, recenter = true) => {
+    setSelectedNode(sn);
+    setNodeFields([]);
+    setDynamicData({});
+    setSubNode(null);
+    if (!sn) return;
+    setNode(sn.id);
+    localStorage.setItem(`last_service_node_${username}`, JSON.stringify(sn));
+    try {
+      const detail = await getNodeDetail(sn.id);
+      setNodeFields(Array.isArray(detail?.additional_fields) ? detail.additional_fields : []);
+    } catch (err) {
+      console.error('Failed to load node detail', err);
+    }
+    // Center the map on the region's city (best-effort). Skipped when restoring a
+    // draft, which carries its own precise coordinates.
+    if (recenter && sn.city) {
+      try {
+        const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
+        const r = await fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&format=json&results=1&geocode=${encodeURIComponent(sn.city)}`);
+        const data = await r.json();
+        const go = data.response?.GeoObjectCollection?.featureMember?.[0]?.GeoObject;
+        if (go) {
+          const [lng, lat] = go.Point.pos.split(' ').map(Number);
+          setCurrentCoords({ lat, lng });
+          setMapState({ center: [lat, lng], zoom: 12 });
+        }
+      } catch { /* keep default center */ }
+    }
+  };
 
   const saveDraft = () => {
     const draft = {
@@ -212,17 +332,32 @@ const NewInstallation: React.FC = () => {
       modemSerial,
       meterNumber,
       address,
+      houseNumber,
       consumerName,
       consumerPhone,
       accountId,
       joinReading,
       apartment,
-      // Add other fields
+      description,
+      port,
+      device_mode: portModeId,
+      type: selectedMeterModelId,
+      installation_place: installationPlace,
+      object_type: objectType,
+      device: deviceId,
+      client_sector: clientSector,
+      manualStreetCode,
+      selectedStreet,
+      currentCoords,
+      deviceDistrict,
+      serviceNode: selectedNode,
+      subNode,
+      dynamicData
     };
 
-    const existingDrafts = JSON.parse(localStorage.getItem('installation_drafts') || '[]');
+    const existingDrafts = JSON.parse(localStorage.getItem(`installation_drafts_${username}`) || '[]');
     existingDrafts.unshift(draft); // Add to top
-    localStorage.setItem('installation_drafts', JSON.stringify(existingDrafts));
+    localStorage.setItem(`installation_drafts_${username}`, JSON.stringify(existingDrafts));
     alert('Черновик сохранен в "Истории"');
   };
 
@@ -233,16 +368,18 @@ const NewInstallation: React.FC = () => {
     if (value.length > 2) {
       const timeoutId = setTimeout(() => {
         const apiKey = 'e0dcd455-3aae-4fe4-abc2-2a258e341c0b';
-        // Add bbox for Almaty and focus search
-        const almatyBbox = '76.7,43.1,77.1,43.4'; 
-        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=Алматы, ${value}&bbox=${almatyBbox}&format=json`)
+        // Almaty gets a tighter bbox to focus results; other cities search broadly.
+        const bbox = geoCity === 'Алматы' ? '&bbox=76.7,43.1,77.1,43.4' : '';
+        const geo = encodeURIComponent(`${geoCity}, ${value}`);
+        fetch(`https://geocode-maps.yandex.ru/1.x/?apikey=${apiKey}&geocode=${geo}${bbox}&format=json`)
           .then(res => res.json())
           .then(data => {
             const featureMember = data.response.GeoObjectCollection.featureMember;
             const suggestions: Street[] = featureMember.map((item: any) => {
               const pos = item.GeoObject.Point.pos.split(' ');
+              const fullText = item.GeoObject.metaDataProperty.GeocoderMetaData.text || '';
               return {
-                Название: item.GeoObject.metaDataProperty.GeocoderMetaData.text.replace('Казахстан, Алматы, ', '').replace('Казахстан, город Алматы, ', ''),
+                Название: fullText.replace(`Казахстан, ${geoCity}, `, '').replace(`Казахстан, город ${geoCity}, `, ''),
                 Код: "0",
                 lng: parseFloat(pos[0]),
                 lat: parseFloat(pos[1])
@@ -329,32 +466,59 @@ const NewInstallation: React.FC = () => {
     geocodeByCoords(lat, lng);
   };
 
+  // Runs the actual device lookup. NO auto-select — the installer always picks
+  // from the list. Server-side `search` already matches EUI, description (where
+  // the printed serial number lives) and address, so we rely on it directly
+  // instead of re-filtering client-side on EUI only.
+  const runDeviceSearch = async (value: string) => {
+    const term = value.trim();
+    if (term.length < 3) {
+      setSuggestedDevices([]);
+      setShowDeviceSuggestions(false);
+      setDeviceSearchDone(false);
+      return;
+    }
+    const seq = ++deviceSearchSeq.current;
+    setSearchingDevices(true);
+    setShowDeviceSuggestions(true);
+    try {
+      const res = await api.get('/api/v1/device/', {
+        params: { search: term, ordering: '-sent_date', page_size: 20 },
+      });
+      if (seq !== deviceSearchSeq.current) return; // a newer search superseded this one
+      const results = Array.isArray(res.data?.results) ? res.data.results : [];
+      setSuggestedDevices(results);
+      setDeviceSearchDone(true);
+    } catch (err) {
+      if (seq !== deviceSearchSeq.current) return;
+      console.error('Device search failed', err);
+      setSuggestedDevices([]);
+      setDeviceSearchDone(true);
+    } finally {
+      if (seq === deviceSearchSeq.current) setSearchingDevices(false);
+    }
+  };
+
   const handleModemSerialChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setModemSerial(value);
+    // Any edit invalidates the previously chosen device.
     setDeviceId(null);
-    setDeviceAddress(null); // Reset device address when EUI changes
+    setDeviceAddress(null);
     setDeviceType(null);
     setDeviceTypeName('');
     setIsPortLocked(false);
 
-    if (value.length > 3) {
-      const timeoutId = setTimeout(async () => {
-        try {
-          const res = await api.get(`/api/v1/device/?ordering=-sent_date&page=1&page_size=10&search=${value}`);
-          if (res.data && Array.isArray(res.data.results)) {
-            setSuggestedDevices(res.data.results);
-            setShowDeviceSuggestions(true);
-          }
-        } catch (err) {
-          console.error('Device search failed', err);
-        }
-      }, 500);
-      return () => clearTimeout(timeoutId);
-    } else {
+    // Real debounce: cancel the pending lookup on every keystroke (the old code
+    // returned a cleanup fn from an onChange handler, which React never calls).
+    if (deviceSearchTimer.current) clearTimeout(deviceSearchTimer.current);
+    if (value.trim().length < 3) {
       setSuggestedDevices([]);
       setShowDeviceSuggestions(false);
+      setDeviceSearchDone(false);
+      return;
     }
+    deviceSearchTimer.current = setTimeout(() => runDeviceSearch(value), 350);
   };
 
   const selectDevice = async (device: any) => {
@@ -366,10 +530,12 @@ const NewInstallation: React.FC = () => {
       setDeviceDistrict(Number(device.additional_data.district));
     }
 
-    // Store device type info
-    const dType = device.type || device.device_model; // Check API response structure
+    // Store device type info. NOTE: the list endpoint returns `type__name`
+    // (double underscore), not `type_name` — the old code read the wrong key
+    // and always showed "Type 20" instead of the real model name.
+    const dType = device.type || device.device_model;
     setDeviceType(dType);
-    setDeviceTypeName(device.type_name || `Type ${dType}`);
+    setDeviceTypeName(device.type__name || device.type_name || `Тип ${dType}`);
     setPortModeId(null); // Reset port mode on device change
 
     // Fetch port modes for this device model
@@ -411,13 +577,19 @@ const NewInstallation: React.FC = () => {
         false
       );
       scanner.render((decodedText) => {
-        setModemSerial(decodedText);
         scanner.clear();
         setIsScanning(false);
-        // Trigger search immediately after scan if needed
-        handleModemSerialChange({ target: { value: decodedText } } as any);
+        // Put the scanned value in the field and search immediately — but the
+        // installer still confirms the right device from the list (no auto-select).
+        setModemSerial(decodedText);
+        setDeviceId(null);
+        setDeviceAddress(null);
+        setDeviceType(null);
+        setDeviceTypeName('');
+        setIsPortLocked(false);
+        runDeviceSearch(decodedText);
       }, () => {
-        // ignore errors
+        // ignore scan errors
       });
     }, 100);
   };
@@ -451,123 +623,189 @@ const NewInstallation: React.FC = () => {
   };
   */
 
+  // Clear device/meter/consumer fields after a successful submit so nothing
+  // stale carries into the next act. Region (selectedNode) and resource type are
+  // intentionally kept — installers usually do many acts in the same area.
+  const resetForm = () => {
+    setModemSerial('');
+    setDeviceId(null);
+    setDeviceAddress(null);
+    setDeviceType(null);
+    setDeviceTypeName('');
+    setSuggestedDevices([]);
+    setShowDeviceSuggestions(false);
+    setDeviceSearchDone(false);
+    setPortModeId(null);
+    setPortModes([]);
+    setIsPortLocked(false);
+    setSelectedMeterModelId('');
+    setMeterSearchTerm('');
+    setMeterNumber('');
+    setAddress('');
+    setHouseNumber('');
+    setApartment('');
+    setSelectedStreet(null);
+    setConsumerName('');
+    setConsumerPhone('+7(7');
+    setAccountId('');
+    setJoinReading('');
+    setPhotos([]);
+    setManualStreetCode('');
+    setDynamicData({});
+  };
+
   const handleSubmit = async () => {
     setError(null);
     if (!resourceType) { alert('Выберите тип ресурса'); return; }
+    if (!selectedNode) { alert('Выберите регион / организацию'); return; }
     if (!modemSerial) { alert('Введите серийный номер модема'); return; }
-    if (!deviceId) { alert('Сначала выберите устройство из списка поиска'); return; } // Enforce selection
+    if (!deviceId) { alert('Сначала выберите устройство из списка поиска'); return; } 
     if (portModeId === null) { alert('Выберите режим работы устройства'); return; }
     if (!selectedMeterModelId) { alert('Выберите тип счётчика'); return; }
     if (!meterNumber) { alert('Введите номер счётчика'); return; }
     if (!address) { alert('Выберите улицу'); return; }
     if (!houseNumber) { alert('Введите номер дома'); return; }
-    // Consumer info is now optional
-    // if (!consumerName) { alert('Введите ФИО потребителя'); return; }
-    // if (!consumerPhone) { alert('Введите телефон'); return; }
-    // if (!accountId) { alert('Введите лицевой счёт'); return; }
     if (!joinReading) { alert('Введите показания'); return; }
 
-    if (resourceType === 'cold' && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
+    if (isAlmatySu && (!selectedStreet?.Код || selectedStreet.Код === "0")) {
       const confirmed = window.confirm(
         'Улица не выбрана из справочника. Акт будет создан без кода улицы Алматы Су. Продолжить?'
       );
       if (!confirmed) return;
     }
 
-    setSubmitting(true);
+    // Prepare Payload
+    const selectedMode = portModes.find(m => m.id === portModeId);
+    const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
+    const streetName = selectedStreet?.Название || address;
+    const lat = currentCoords.lat;
+    const lng = currentCoords.lng;
 
-    let addressId = null;
-    // Создаем отдельный объект адреса (для совместимости с бэкендом)
-    try {
-      const streetName = selectedStreet?.Название || address;
-      const lat = currentCoords.lat;
-      const lng = currentCoords.lng;
-      
-      const newAddressRes = await api.post('/api/v1/address/', {
-          province: 'г. Алматы',
-          locality: 'г. Алматы',
-          area: 'городской акимат Алматы',
-          district: 'Алматы',
-          street: streetName,
-          house: houseNumber,
-          lng: lng,
-          lat: lat,
-          coordinates: `SRID=4326;POINT (${lng} ${lat})`
-        });
-      addressId = newAddressRes.data.id;
-      setDeviceAddress(addressId);
-    } catch (err) {
-      console.error('Address creation failed:', err);
+    // Region-specific extra fields from the selected node's schema. Almaty Su
+    // keeps its bespoke street/IPU handling below; every other utility's fields
+    // (e.g. Karaganda: check_date, address_code, район) are collected generically
+    // from dynamicData and routed top-level or into additional_data by `name`.
+    const extraTopLevel: any = {};
+    const extraAdditional: any = {};
+    const AD_PREFIX = 'additional_data.';
+    for (const f of nodeFields) {
+      if (f.name === 'additional_data.almaty_su_street_id' || f.name === 'additional_data.district') continue;
+      const raw = dynamicData[f.name];
+      if (raw == null || raw === '') continue;
+      const value = f.type === 'select' ? Number(raw) : raw;
+      if (f.name.startsWith(AD_PREFIX)) extraAdditional[f.name.slice(AD_PREFIX.length)] = value;
+      else extraTopLevel[f.name] = value;
+    }
+    if (isAlmatySu) {
+      const sc = manualStreetCode || selectedStreet?.Код;
+      if (sc && sc !== "0") extraTopLevel.address_code = sc;
     }
 
-    // Создаем счетчик сразу с адресными полями (street, house, address_code)
-    // Также передаем device__address для совместимости
+    const meterPayload: any = {
+      serial_number: meterNumber || "",
+      description: description || "",
+      ...(needsPort ? { port: Number(port) } : {}),
+      join_date: joinDate,
+      join_reading: Number(joinReading),
+      is_active: true,
+      client_sector: clientSector,
+      street: streetName,
+      house: houseNumber,
+      ...extraTopLevel,
+      additional_data: (() => {
+        const data: any = { ...extraAdditional };
+        if (isAlmatySu) {
+          const streetId = manualStreetCode || selectedStreet?.Код;
+          if (streetId && streetId !== "0") data.almaty_su_street_id = streetId;
+          data.district = deviceDistrict || 2;
+        }
+        data.lat = lat;
+        data.lng = lng;
+        if (username && username !== 'anon') data.installed_by = username; // attributes the act to the installer
+        return data;
+      })(),
+      consumer: consumerName || "",
+      apartment: apartment || "",
+      phone: consumerPhone || "",
+      account_id: accountId || "",
+      device_mode: portModeId,
+      type: Number(selectedMeterModelId) || null,
+      object_type: Number(objectType) || null,
+      installation_place: Number(installationPlace) || null,
+      device: deviceId,
+      resource_type: resourceType === 'cold' ? 1 : 2,
+      node: subNode?.id ?? selectedNode?.id ?? node,
+    };
 
-    try {
-      const selectedMode = portModes.find(m => m.id === portModeId);
-      const needsPort = selectedMode?.additional_data?.fields?.some(f => f.name === 'port') ?? false;
+    const addressPayload = {
+      province: geoCity,
+      locality: geoCity,
+      area: '',
+      district: geoCity,
+      street: streetName,
+      house: houseNumber,
+      lng: lng,
+      lat: lat,
+      coordinates: `SRID=4326;POINT (${lng} ${lat})`
+    };
 
-      const streetName = selectedStreet?.Название || address;
-      const streetCode = manualStreetCode || selectedStreet?.Код;
-      
-      const payload: any = {
-        serial_number: meterNumber || "",
-        description: description || "",
-        ...(needsPort ? { port: Number(port) } : {}),
-        join_date: joinDate,
-        join_reading: Number(joinReading),
-        is_active: true,
-        client_sector: clientSector,
-        // Адресные поля прямо для счетчика (чтобы каждый счетчик хранил свой адрес)
-        street: streetName,
-        house: houseNumber,
-        address_code: streetCode && streetCode !== "0" ? streetCode : null,
-        additional_data: (() => {
-          const data: any = {};
-          if (resourceType === 'cold') {
-            const streetId = manualStreetCode || selectedStreet?.Код;
-            if (streetId && streetId !== "0") {
-              data.almaty_su_street_id = streetId;
-            }
-            data.district = deviceDistrict || 2;
-          }
-          // Добавляем координаты в additional_data, если нужно
-          data.lat = currentCoords.lat;
-          data.lng = currentCoords.lng;
-          return data;
-        })(),
-        consumer: consumerName || "",
-        apartment: apartment || "",
-        phone: consumerPhone || "",
-        account_id: accountId || "",
-        device_mode: portModeId,
-        type: Number(selectedMeterModelId) || null,
-        object_type: Number(objectType) || null,
-        installation_place: Number(installationPlace) || null,
-        device: deviceId,
-        resource_type: resourceType === 'cold' ? 1 : 2,
-        node: node,
+    setSubmitting(true);
+
+    // Offline Sync Logic
+    if (!navigator.onLine) {
+      const outboxItem = {
+        ...meterPayload,
+        _offlineAddressData: addressPayload,
+        _outboxId: Date.now(),
+        // Extra info for history
+        modemSerial,
+        address
       };
 
-      if (addressId) {
-        payload.device__address = addressId;
+      const outbox = JSON.parse(localStorage.getItem(`installation_outbox_${username}`) || '[]');
+      outbox.push({ ...outboxItem, installedBy: username });
+      localStorage.setItem(`installation_outbox_${username}`, JSON.stringify(outbox));
+
+      alert('Оффлайн: Установка сохранена в очередь. Она будет отправлена автоматически при появлении интернета.');
+      resetForm();
+      setSubmitting(false);
+      return;
+    }
+
+    try {
+      // Create Address
+      let addressId = null;
+      try {
+        const newAddressRes = await api.post(endpoints.address, addressPayload);
+        addressId = newAddressRes.data.id;
+        setDeviceAddress(addressId);
+      } catch (err) {
+        console.error('Address creation failed:', err);
       }
 
-      console.log('Sending payload:', JSON.stringify(payload, null, 2));
+      const finalPayload = { ...meterPayload };
+      if (addressId) {
+        finalPayload.device__address = addressId;
+      }
+
+      console.log('Sending payload:', JSON.stringify(finalPayload, null, 2));
 
       // Create Meter
-      await api.post(endpoints.meter, payload);
+      const meterRes = await api.post(endpoints.meter, finalPayload);
+      const createdMeterId = meterRes.data?.id ?? null;
 
-      // Save to History
+      // Save to History. status is no longer hardcoded "success": we keep the
+      // created meter id and its upload_status (starts null = "в разработке";
+      // the History page refetches it and it becomes "Принято в систему АСИЦРА").
       const historyItem = {
         timestamp: new Date().toISOString(),
         address,
         houseNumber,
         meterNumber,
         modemSerial,
-        status: 'success',
-        // Include full data for templates
-        ...payload,
+        meterId: createdMeterId,
+        upload_status: meterRes.data?.upload_status ?? null,
+        ...finalPayload,
         consumerName,
         consumerPhone,
         accountId,
@@ -576,26 +814,12 @@ const NewInstallation: React.FC = () => {
         port,
         apartment
       };
-      const existingHistory = JSON.parse(localStorage.getItem('installation_history') || '[]');
+      const existingHistory = JSON.parse(localStorage.getItem(`installation_history_${username}`) || '[]');
       existingHistory.unshift(historyItem);
-      localStorage.setItem('installation_history', JSON.stringify(existingHistory));
+      localStorage.setItem(`installation_history_${username}`, JSON.stringify(existingHistory));
 
-      // window.location.reload(); // Removed reload as per user request to stay in system
-      
-      // Reset form instead of reload
-      setModemSerial('');
-      setDeviceId(null);
-      setDeviceAddress(null);
-      setMeterNumber('');
-      setAddress('');
-      setHouseNumber('');
-      setConsumerName('');
-      setConsumerPhone('+7(7');
-      setAccountId('');
-      setJoinReading('');
-      setPhotos([]);
-      alert('Установка успешно создана!');
-
+      resetForm();
+      alert('Акт создан. Статус: «В разработке» — после обработки станет «Принято в систему АСИЦРА» (видно в Истории).');
     } catch (err: any) {
       console.error('Submission error:', err);
       let msg = 'Ошибка при создании установки';
@@ -644,6 +868,54 @@ const NewInstallation: React.FC = () => {
           </div>
         </section>
 
+        {/* Region / Organization (sets meter.node) */}
+        <section className="space-y-2">
+          <label className="text-sm font-semibold text-gray-700">Регион / организация <span className="text-red-500">*</span></label>
+          <div className="relative">
+            <select
+              value={selectedNode?.id ?? ''}
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                selectRegion(serviceNodes.find(n => n.id === id) || null);
+              }}
+              className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              <option value="">Выберите регион...</option>
+              {serviceNodes.map(n => (
+                <option key={n.id} value={n.id}>
+                  {n.city ? `${n.city} — ` : ''}{n.supplier || n.name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+          </div>
+          {selectedNode && (
+            <p className="text-[11px] text-gray-500 mt-1">Узел: {selectedNode.name} (ID {selectedNode.id})</p>
+          )}
+        </section>
+
+        {/* Subnode picker — only when the node has children and isn't Almaty.
+            If there are no subnodes we show nothing (the meter attaches to the node). */}
+        {selectedNode && !isAlmaty && (selectedNode.children?.length ?? 0) > 0 && (
+          <section className="space-y-2">
+            <label className="text-sm font-semibold text-gray-700">Подузел</label>
+            <div className="relative">
+              <select
+                value={subNode?.id ?? ''}
+                onChange={(e) => {
+                  const id = Number(e.target.value);
+                  setSubNode(id ? (selectedNode.children?.find(c => c.id === id) ?? null) : null);
+                }}
+                className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
+              >
+                <option value="">{selectedNode.name} (весь узел)</option>
+                {(selectedNode.children ?? []).map(ch => <option key={ch.id} value={ch.id}>{ch.name}</option>)}
+              </select>
+              <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+            </div>
+          </section>
+        )}
+
         {/* Modem Serial & Auto-Config */}
         <section className="space-y-2 relative">
           <label className="text-sm font-semibold text-gray-700">Серийный номер модема <span className="text-red-500">*</span></label>
@@ -673,16 +945,53 @@ const NewInstallation: React.FC = () => {
           )}
 
           {showDeviceSuggestions && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 max-h-60 overflow-y-auto">
-              {suggestedDevices.map((d) => (
-                <div key={d.id} onClick={() => selectDevice(d)} className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 flex justify-between items-center">
-                  <div>
-                    <span className="font-medium">{d.eui || d.serial_number}</span>
-                    <span className="text-xs text-gray-500 ml-2">({d.type_name || d.type || 'Unknown Type'})</span>
-                  </div>
-                  <span className="text-xs text-gray-400">ID: {d.id}</span>
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 max-h-80 overflow-y-auto">
+              {searchingDevices && (
+                <div className="flex items-center gap-2 p-4 text-sm text-gray-500">
+                  <Loader2 className="animate-spin text-blue-600" size={18} />
+                  Поиск модема...
                 </div>
-              ))}
+              )}
+
+              {!searchingDevices && deviceSearchDone && suggestedDevices.length === 0 && (
+                <div className="p-4 text-sm text-gray-500 text-center">
+                  Модем не найден. Проверьте серийный номер, EUI или адрес.
+                </div>
+              )}
+
+              {!searchingDevices && suggestedDevices.length > 0 && (
+                <>
+                  <div className="px-3 pt-2 pb-1 text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                    Найдено: {suggestedDevices.length}{suggestedDevices.length >= 20 ? '+ (уточните запрос)' : ''} — выберите ваш модем
+                  </div>
+                  {suggestedDevices.map((d) => (
+                    <button
+                      type="button"
+                      key={d.id}
+                      onClick={() => selectDevice(d)}
+                      className="w-full text-left p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-gray-900 text-sm">
+                          {d.type__name || d.type_name || `Тип ${d.type}`}
+                        </span>
+                        <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full font-bold ${d.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                          {d.is_active ? 'активен' : 'неактивен'}
+                        </span>
+                      </div>
+                      {d.description && (
+                        <div className="text-sm text-gray-700 mt-0.5 break-words">{d.description}</div>
+                      )}
+                      {d.address_name && (
+                        <div className="text-xs text-gray-500 mt-0.5">Адрес: {d.address_name}</div>
+                      )}
+                      <div className="text-[11px] text-gray-400 font-mono mt-1 break-all">
+                        EUI: {d.eui || d.serial_number || '—'} · ID {d.id}
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           )}
           {isScanning && (
@@ -829,7 +1138,7 @@ const NewInstallation: React.FC = () => {
                 className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none pr-10"
               />
               <Search className="absolute right-4 top-4 text-gray-400" size={20} />
-              <p className="text-[10px] text-gray-400 mt-1 ml-1">Поиск по Яндекс Картам (только Алматы)</p>
+              <p className="text-[10px] text-gray-400 mt-1 ml-1">Поиск по Яндекс Картам ({geoCity})</p>
               {showSuggestions && suggestedStreets.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-30 max-h-60 overflow-y-auto">
                   {suggestedStreets.map((s, idx) => (
@@ -847,6 +1156,53 @@ const NewInstallation: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* Manual Street Code — only when the selected node (Almaty Su) requires it */}
+        {isAlmatySu && (
+          <section className="space-y-2">
+            <label className="text-sm font-semibold text-gray-700">Код улицы в базе Алматы Су</label>
+            <input
+              type="text"
+              value={manualStreetCode}
+              onChange={(e) => setManualStreetCode(e.target.value)}
+              placeholder="Код улицы (автоматически или вручную)"
+              className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <p className="text-[10px] text-gray-400 mt-1 ml-1">Если код не найден автоматически, введите его вручную</p>
+          </section>
+        )}
+
+        {/* Generic per-utility extra fields from node.additional_fields
+            (e.g. Karaganda: дата поверки, код адреса, район). Almaty Su's street
+            code is handled above and its IPU class below; everything else here. */}
+        {nodeFields
+          .filter(f => f.name !== 'additional_data.almaty_su_street_id' && f.name !== 'additional_data.district')
+          .map(f => (
+            <section key={f.name} className="space-y-2">
+              <label className="text-sm font-semibold text-gray-700">{f.label}</label>
+              {f.type === 'select' && Array.isArray(f.choices) ? (
+                <div className="relative">
+                  <select
+                    value={dynamicData[f.name] ?? ''}
+                    onChange={(e) => setDynamicData(prev => ({ ...prev, [f.name]: e.target.value }))}
+                    className="w-full appearance-none bg-white border border-gray-300 text-gray-900 rounded-xl p-4 pr-10 focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="">Выберите...</option>
+                    {f.choices.map(c => <option key={String(c.id)} value={String(c.id)}>{c.name}</option>)}
+                  </select>
+                  <ChevronDown className="absolute right-4 top-4 text-gray-400 pointer-events-none" size={20} />
+                </div>
+              ) : (
+                <input
+                  type={f.type === 'date' ? 'date' : 'text'}
+                  value={dynamicData[f.name] ?? ''}
+                  onChange={(e) => setDynamicData(prev => ({ ...prev, [f.name]: e.target.value }))}
+                  className="w-full bg-white border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              )}
+            </section>
+          ))
+        }
 
         {/* House and Flat */}
         <div className="grid grid-cols-2 gap-4">
@@ -944,8 +1300,8 @@ const NewInstallation: React.FC = () => {
 
         {/* Client Sector removed as it is now default legal and hidden */}
 
-        {/* IPU Class (District) for Almaty Su */}
-        {resourceType === 'cold' && (
+        {/* IPU Class (District) — Almaty Su only */}
+        {isAlmatySu && (
           <section className="space-y-2">
             <label className="text-sm font-semibold text-gray-700">Класс ИПУ <span className="text-red-500">*</span></label>
             <div className="grid grid-cols-2 gap-2">
@@ -1034,14 +1390,21 @@ const NewInstallation: React.FC = () => {
 
       {/* Footer / Submit */}
       <footer className="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md shadow-top z-10 border-t border-gray-200 md:bottom-0 mb-16 md:mb-0">
-        <div className="max-w-lg mx-auto">
+        <div className="max-w-lg mx-auto flex gap-3">
+          <button
+            onClick={saveDraft}
+            className="flex-1 py-4 bg-white border-2 border-blue-600 text-blue-600 text-lg font-bold rounded-xl hover:bg-blue-50 transition-all active:scale-95 flex items-center justify-center space-x-2"
+          >
+            <FileText size={24} />
+            <span>В черновик</span>
+          </button>
           <button
             onClick={handleSubmit}
             disabled={submitting}
-            className="w-full py-4 bg-green-600 text-white text-lg font-bold rounded-xl shadow-lg shadow-green-200 hover:transform hover:-translate-y-1 transition-all active:scale-95 disabled:bg-gray-400 disabled:shadow-none flex items-center justify-center space-x-2"
+            className="flex-[2] py-4 bg-green-600 text-white text-lg font-bold rounded-xl shadow-lg shadow-green-200 hover:transform hover:-translate-y-1 transition-all active:scale-95 disabled:bg-gray-400 disabled:shadow-none flex items-center justify-center space-x-2"
           >
             {submitting ? <Loader2 className="animate-spin" /> : <Check size={24} />}
-            <span>{submitting ? 'Отправка...' : 'Создать установку'}</span>
+            <span>{submitting ? 'Отправка...' : 'Создать'}</span>
           </button>
         </div>
       </footer>

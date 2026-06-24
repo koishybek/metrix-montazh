@@ -1,101 +1,132 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { TrendingUp, Calendar, MapPin, Phone } from 'lucide-react';
+import { getServiceNodes } from '../api';
+import { format } from 'date-fns';
+import { MapPin, CheckCircle, Clock, XCircle, CalendarCheck, ListChecks } from 'lucide-react';
+
+interface Stat {
+  total: number;
+  today: number;
+  week: number;
+  accepted: number;
+  inProgress: number;
+  rejected: number;
+}
 
 const Profile: React.FC = () => {
   const { user } = useAuth();
-  const [stats, setStats] = useState({
-    today: 0,
-    week: 0,
-    total: 0,
-    level: 'Специалист'
-  });
+  const username = user?.username || 'anon';
+  const isAdmin = user?.role === 'admin';
+
+  const [regions, setRegions] = useState<string[]>([]);
+  const [stats, setStats] = useState<Stat>({ total: 0, today: 0, week: 0, accepted: 0, inProgress: 0, rejected: 0 });
+  const [recent, setRecent] = useState<any[]>([]);
 
   useEffect(() => {
-    // Calculate stats from local history
-    const history = JSON.parse(localStorage.getItem('installation_history') || '[]');
-    const today = new Date().toDateString();
-
-    const countToday = history.filter((h: any) => new Date(h.timestamp).toDateString() === today).length;
-    const countTotal = history.length;
-
+    // Stats from this account's own history (per-user key).
+    const history: any[] = JSON.parse(localStorage.getItem(`installation_history_${username}`) || '[]');
+    const todayStr = new Date().toDateString();
+    const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
+    const us = (h: any) => (h.upload_status || '') as string;
     setStats({
-      today: countToday,
-      week: countTotal, 
-      total: countTotal,
-      level: 'Монтажник'
+      total: history.length,
+      today: history.filter(h => new Date(h.timestamp).toDateString() === todayStr).length,
+      week: history.filter(h => new Date(h.timestamp).getTime() >= weekAgo).length,
+      accepted: history.filter(h => us(h).startsWith('Принято')).length,
+      rejected: history.filter(h => us(h).startsWith('Не принято')).length,
+      inProgress: history.filter(h => !us(h)).length,
     });
-  }, []);
+    setRecent(history.slice(0, 5));
+
+    // Real regions the account has access to (scoped server-side for installers).
+    getServiceNodes()
+      .then(ns => setRegions([...new Set(ns.map(n => n.city).filter(Boolean))]))
+      .catch(() => { /* offline: leave empty */ });
+  }, [username]);
+
+  const initials = username.replace(/[^a-zA-Zа-яА-Я0-9]/g, '').substring(0, 2).toUpperCase() || 'МН';
+
+  const statusBadge = (item: any) => {
+    const s: string = item.upload_status || '';
+    if (s.startsWith('Принято')) return <span className="text-[11px] font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-1"><CheckCircle size={12} />Принято</span>;
+    if (s.startsWith('Не принято')) return <span className="text-[11px] font-bold text-red-700 bg-red-50 px-2 py-0.5 rounded-full flex items-center gap-1"><XCircle size={12} />Отклонено</span>;
+    return <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full flex items-center gap-1"><Clock size={12} />В разработке</span>;
+  };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-8">
+    <div className="p-6 max-w-4xl mx-auto space-y-6">
 
-      {/* Profile Header */}
+      {/* Header */}
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col md:flex-row items-center md:items-start gap-6">
-        <div className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg shadow-blue-200">
-          {user?.username?.substring(0, 2).toUpperCase() || 'ME'}
+        <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-blue-200 shrink-0">
+          {initials}
         </div>
-
         <div className="flex-1 text-center md:text-left space-y-2">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{user?.username || 'Монтажник'}</h1>
-            <p className="text-gray-500 font-medium">Отдел монтажа</p>
-          </div>
-
-          <div className="flex flex-wrap justify-center md:justify-start gap-3 pt-2">
-            <span className="px-3 py-1 bg-gray-100 rounded-full text-xs font-bold text-gray-600 flex items-center gap-1">
-              <Phone size={12} /> +7 (700) 000-00-00
-            </span>
-            <span className="px-3 py-1 bg-gray-100 rounded-full text-xs font-bold text-gray-600 flex items-center gap-1">
-              <MapPin size={12} /> Алматы
-            </span>
+          <h1 className="text-2xl font-bold text-gray-900">{username}</h1>
+          <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${isAdmin ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+            {isAdmin ? 'Администратор' : 'Монтажник'}
+          </span>
+          <div className="flex flex-wrap justify-center md:justify-start gap-2 pt-1">
+            {regions.length > 0 ? regions.map(r => (
+              <span key={r} className="px-3 py-1 bg-gray-100 rounded-full text-xs font-bold text-gray-700 flex items-center gap-1">
+                <MapPin size={12} /> {r}
+              </span>
+            )) : (
+              <span className="text-xs text-gray-400">Регионы загружаются…</span>
+            )}
           </div>
         </div>
-
-        <div className="bg-blue-50 px-6 py-4 rounded-xl text-center min-w-[140px]">
+        <div className="bg-blue-50 px-6 py-4 rounded-xl text-center min-w-[130px]">
           <div className="text-3xl font-bold text-blue-600">{stats.total}</div>
-          <div className="text-xs font-bold text-blue-400 uppercase tracking-wider">Всего работ</div>
+          <div className="text-xs font-bold text-blue-400 uppercase tracking-wider">Всего актов</div>
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center text-green-600">
-            <Calendar size={24} />
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-gray-900">{stats.today}</div>
-            <div className="text-xs text-gray-500 font-medium">За сегодня</div>
-          </div>
+      {/* Stats grid */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm">
+          <div className="flex items-center gap-2 text-gray-500 text-xs font-medium mb-1"><CalendarCheck size={16} /> Сегодня</div>
+          <div className="text-3xl font-bold text-gray-900">{stats.today}</div>
         </div>
-
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-            <TrendingUp size={24} />
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
-            <div className="text-xs text-gray-500 font-medium">Всего выполнено</div>
-          </div>
+        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm">
+          <div className="flex items-center gap-2 text-gray-500 text-xs font-medium mb-1"><ListChecks size={16} /> За неделю</div>
+          <div className="text-3xl font-bold text-gray-900">{stats.week}</div>
+        </div>
+        <div className="bg-white p-5 rounded-xl border border-green-100 shadow-sm">
+          <div className="flex items-center gap-2 text-green-600 text-xs font-medium mb-1"><CheckCircle size={16} /> Принято в АСИЦРА</div>
+          <div className="text-3xl font-bold text-green-700">{stats.accepted}</div>
+        </div>
+        <div className="bg-white p-5 rounded-xl border border-amber-100 shadow-sm">
+          <div className="flex items-center gap-2 text-amber-600 text-xs font-medium mb-1"><Clock size={16} /> В разработке</div>
+          <div className="text-3xl font-bold text-amber-700">{stats.inProgress}</div>
         </div>
       </div>
 
-      {/* Recent Activity Graph Placeholder */}
+      {/* Recent activity */}
       <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-        <h3 className="font-bold text-gray-900 mb-4">Активность за месяц</h3>
-        <div className="h-40 bg-gray-50 rounded-xl flex items-end justify-between p-4 px-8 gap-2">
-          {[40, 60, 30, 80, 50, 90, 40].map((h, i) => (
-            <div key={i} className="w-full bg-blue-500 rounded-t-lg opacity-80 hover:opacity-100 transition-opacity relative group" style={{ height: `${h}%` }}>
-              <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-black text-white text-xs py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                {h}
+        <h3 className="font-bold text-gray-900 mb-4">Последние акты</h3>
+        {recent.length === 0 ? (
+          <p className="text-gray-400 text-sm text-center py-6">Пока нет установок</p>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {recent.map((item, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0">
+                  <p className="font-medium text-gray-900 truncate">{item.address || 'Без адреса'}{item.houseNumber ? `, ${item.houseNumber}` : ''}</p>
+                  <p className="text-xs text-gray-400">
+                    № {item.meterNumber || '—'} · {item.timestamp ? format(new Date(item.timestamp), 'dd.MM.yyyy HH:mm') : ''}
+                  </p>
+                </div>
+                {statusBadge(item)}
               </div>
-            </div>
-          ))}
-        </div>
-        <div className="flex justify-between mt-2 text-xs text-gray-400 font-medium px-2">
-          <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
-        </div>
+            ))}
+          </div>
+        )}
+        {stats.rejected > 0 && (
+          <p className="text-xs text-red-600 mt-4 flex items-center gap-1">
+            <XCircle size={12} /> Отклонено системой: {stats.rejected} — проверьте данные и пересоздайте.
+          </p>
+        )}
       </div>
 
     </div>
