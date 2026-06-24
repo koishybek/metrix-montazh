@@ -194,17 +194,20 @@ const NewInstallation: React.FC = () => {
 
   // Restore the last picked region/organization — installers usually work one
   // region for a long stretch, so this saves them re-selecting every act.
+  // Per-account, and only restored once the scoped list has loaded AND still
+  // contains it, so a region from a previous login can never leak through.
   // Skipped when continuing a draft (the draft carries its own region).
   useEffect(() => {
     if (location.state && (location.state as any).draft) return;
-    const saved = localStorage.getItem('last_service_node');
-    if (saved) {
-      try {
-        selectRegion(JSON.parse(saved) as ServiceNode);
-      } catch { /* ignore corrupt cache */ }
-    }
+    if (selectedNode || !serviceNodes.length) return;
+    const saved = localStorage.getItem(`last_service_node_${username}`);
+    if (!saved) return;
+    try {
+      const sn = JSON.parse(saved) as ServiceNode;
+      if (serviceNodes.some(n => n.id === sn.id)) selectRegion(sn);
+    } catch { /* ignore corrupt cache */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [serviceNodes, username]);
 
   // Update map when house number changes
   useEffect(() => {
@@ -253,11 +256,39 @@ const NewInstallation: React.FC = () => {
       }
     };
 
+    // Reference data is open to every account, so a shared cache is fine.
     loadCachedOrFetch('meter_models_cache', 'meter_models_ts', setMeterModels, getMeterModels);
     loadCachedOrFetch('installation_places_cache', 'installation_places_ts', setInstallationPlaces, getInstallationPlaces);
     loadCachedOrFetch('object_types_cache', 'object_types_ts', setObjectTypes, getObjectTypes);
-    loadCachedOrFetch('service_nodes_cache_v2', 'service_nodes_ts_v2', setServiceNodes, getServiceNodes);
   }, []);
+
+  // Service nodes are ACCESS-SCOPED per account (the backend scopes /node/ to the
+  // logged-in installer). They must never be shared across users and must reflect
+  // current grants, so: fetch fresh when online (and cache per-user), and fall back
+  // to THIS account's last cached list only when offline. The previous global
+  // `service_nodes_cache_v2` key leaked one account's regions to the next login.
+  useEffect(() => {
+    const key = `service_nodes_cache_v3_${username}`;
+    let cancelled = false;
+    (async () => {
+      if (navigator.onLine) {
+        try {
+          const data = await getServiceNodes();
+          if (cancelled) return;
+          setServiceNodes(data);
+          localStorage.setItem(key, JSON.stringify(data));
+          return;
+        } catch (err) {
+          console.error('Failed to load service nodes', err);
+        }
+      }
+      const cached = localStorage.getItem(key);
+      if (cached && !cancelled) {
+        try { setServiceNodes(JSON.parse(cached)); } catch { /* ignore corrupt cache */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [username]);
 
   // -- Handlers --
 
@@ -270,7 +301,7 @@ const NewInstallation: React.FC = () => {
     setSubNode(null);
     if (!sn) return;
     setNode(sn.id);
-    localStorage.setItem('last_service_node', JSON.stringify(sn));
+    localStorage.setItem(`last_service_node_${username}`, JSON.stringify(sn));
     try {
       const detail = await getNodeDetail(sn.id);
       setNodeFields(Array.isArray(detail?.additional_fields) ? detail.additional_fields : []);

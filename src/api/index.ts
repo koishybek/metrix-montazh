@@ -80,6 +80,7 @@ const CITY_BY_NODE: Record<number, string> = {
     20: 'Алматы', 256: 'Алматы', 50: 'Туркестан', 78: 'Караганда', 920: 'Караганда',
     411: 'Кызылорда', 518: 'Кызылорда', 543: 'Косшы', 24: 'Талдыкорган',
     154: 'Темиртау', 166: 'Актау', 177: 'Атырау', 510: 'Бишкек', 42: 'Астана',
+    974: 'Жезказган', 70: 'Целиноград',
 };
 
 // Walk the node tree (one recursive call) and collect IoT-Exponenta service
@@ -93,10 +94,15 @@ export const getServiceNodes = async (): Promise<ServiceNode[]> => {
     const walk = (n: any, city: string, supplier: string) => {
         let c = city;
         let s = supplier;
-        // type 3=область, 4=район, 5=город — keep the most specific seen on the way down
-        if (n.type === 3 || n.type === 4 || n.type === 5) c = n.name || c;
+        // geographic tiers: 3=область, 4=район, 5=город, 47=область (Улытау) —
+        // keep the most specific seen on the way down
+        if (n.type === 3 || n.type === 4 || n.type === 5 || n.type === 47) c = n.name || c;
         if (n.type === 16) s = n.name || s; // supplier (водоканал / тепловые сети)
-        if (n.type === 17 && /IoT-?Exponenta/i.test(n.name || '')) {
+        // All service companies (type 17). A non-admin's tree is access-scoped
+        // server-side, so this is exactly their assigned org(s); the previous
+        // IoT-Exponenta name filter wrongly hid orgs named otherwise (e.g.
+        // Улытау's "ИП Сеник") — that hid a scoped installer's only node.
+        if (n.type === 17) {
             const children = (n.children || []).map((ch: any) => ({ id: ch.id, name: ch.name }));
             out.push({ id: n.id, name: n.name, supplier: s, city: c || CITY_BY_NODE[n.id] || '', children });
         }
